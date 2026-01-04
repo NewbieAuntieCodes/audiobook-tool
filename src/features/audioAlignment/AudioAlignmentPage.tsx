@@ -1,51 +1,22 @@
 import React, { useState, useRef, useMemo, useCallback, useEffect } from 'react';
 import { useStore } from '../../store/useStore';
+import AudioScriptLine from './components/AudioScriptLine';
 import GlobalAudioPlayer from './components/GlobalAudioPlayer';
 import ExportAudioModal from './components/ExportAudioModal';
 import { exportAudioWithMarkers } from '../../lib/wavExporter';
 import { db } from '../../db';
-import { Character } from '../../types';
+import { ScriptLine, Chapter, Character } from '../../types';
 import { useAudioFileMatcher } from './hooks/useAudioFileMatcher';
 import { useAsrAutoAligner } from './hooks/useAsrAutoAligner';
 import ResizablePanels from '../../components/ui/ResizablePanels';
 import { usePaginatedChapters } from '../scriptEditor/hooks/usePaginatedChapters';
 import SilenceSettingsModal from './components/SilenceSettingsModal';
+import AudioWaveformEditor from './components/AudioWaveformEditor';
 import { ChevronLeftIcon } from '../../components/ui/icons';
 import AudioAlignmentHeader from './components/AudioAlignmentHeader';
 import ChapterListPanel from './components/ChapterListPanel';
 import ScriptLineList from './components/ScriptLineList';
-import LocalWaveformDockPanel, { LocalCalibrationWindowLine } from './components/LocalWaveformDockPanel';
 import { exportToReaperProject } from '../../services/reaperExporter';
-
-const toSortedUnique = (arr: number[]) => {
-  const out = (arr || []).filter((n) => Number.isFinite(n)).sort((a, b) => a - b);
-  const dedup: number[] = [];
-  for (const n of out) {
-    if (dedup.length === 0 || Math.abs(dedup[dedup.length - 1] - n) > 1e-6) dedup.push(n);
-  }
-  return dedup;
-};
-
-const getBlobDurationSeconds = async (blob: Blob): Promise<number> => {
-  const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-  try {
-    const decoded = await audioContext.decodeAudioData(await blob.arrayBuffer());
-    return decoded.duration;
-  } finally {
-    if (audioContext.state !== 'closed') {
-      await audioContext.close();
-    }
-  }
-};
-
-type LocalCalDockState = {
-  sourceAudioInfo: { id: string; filename: string };
-  windowLineIds: string[];
-  windowLines: LocalCalibrationWindowLine[];
-  initialSkipLineIds: string[];
-  markerRange: { min: number; max: number };
-  initialMarkers: number[];
-};
 
 const AudioAlignmentPage: React.FC = () => {
   const store = useStore(state => ({
@@ -56,10 +27,13 @@ const AudioAlignmentPage: React.FC = () => {
     setSelectedChapterId: state.setSelectedChapterId,
     playingLineInfo: state.playingLineInfo,
     assignAudioToLine: state.assignAudioToLine,
-    resegmentAndRealignAudioWindow: state.resegmentAndRealignAudioWindow,
+    resegmentAndRealignAudio: state.resegmentAndRealignAudio,
     navigateTo: state.navigateTo,
     openConfirmModal: state.openConfirmModal,
     clearAudioFromChapters: state.clearAudioFromChapters,
+    waveformEditorState: state.waveformEditor,
+    openWaveformEditor: state.openWaveformEditor,
+    closeWaveformEditor: state.closeWaveformEditor,
     cvFilter: state.audioAlignmentCvFilter,
     setCvFilter: state.setAudioAlignmentCvFilter,
     characterFilter: state.audioAlignmentCharacterFilter,
@@ -78,8 +52,9 @@ const AudioAlignmentPage: React.FC = () => {
 
   const {
     projects, characters, selectedProjectId, selectedChapterId, setSelectedChapterId,
-    assignAudioToLine, resegmentAndRealignAudioWindow, navigateTo,
-    openConfirmModal, clearAudioFromChapters, cvFilter, setCvFilter, characterFilter, setCharacterFilter,
+    assignAudioToLine, resegmentAndRealignAudio, navigateTo,
+    openConfirmModal, clearAudioFromChapters, waveformEditorState, openWaveformEditor,
+    closeWaveformEditor, cvFilter, setCvFilter, characterFilter, setCharacterFilter,
     activeRecordingLineId, setActiveRecordingLineId, webSocketStatus, webSocketConnect,
     multiSelectedChapterIds, setMultiSelectedChapterIds, lufsSettings, setLufsSettings,
     isRecordingMode, setRecordingMode
@@ -92,10 +67,6 @@ const AudioAlignmentPage: React.FC = () => {
   const [isExportingToReaper, setIsExportingToReaper] = useState(false);
   const [isSilenceSettingsModalOpen, setIsSilenceSettingsModalOpen] = useState(false);
   const [lastSelectedChapterForShiftClick, setLastSelectedChapterForShiftClick] = useState<string | null>(null);
-  const [localCalDock, setLocalCalDock] = useState<LocalCalDockState | null>(null);
-  const [isLocalCalPreparing, setIsLocalCalPreparing] = useState(false);
-  const [isLocalCalSaving, setIsLocalCalSaving] = useState(false);
-  const [localCalError, setLocalCalError] = useState<string | null>(null);
   const currentProject = projects.find(p => p.id === selectedProjectId);
 
   useEffect(() => {
@@ -106,11 +77,6 @@ const AudioAlignmentPage: React.FC = () => {
       }
     }
   }, [activeRecordingLineId]);
-
-  useEffect(() => {
-    setLocalCalDock(null);
-    setLocalCalError(null);
-  }, [selectedProjectId, selectedChapterId]);
   
   const {
     isSmartMatchLoading,
@@ -165,153 +131,7 @@ const AudioAlignmentPage: React.FC = () => {
     if (nonAudioCharacterIds.length === 0) return selectedChapter.scriptLines;
     return selectedChapter.scriptLines.filter(line => !nonAudioCharacterIds.includes(line.characterId || ''));
   }, [selectedChapter, nonAudioCharacterIds]);
-
-  const openLocalCalibrationDock = useCallback(
-    async (lineId: string, lineIndex: number, sourceAudioId: string, sourceAudioFilename: string) => {
-      if (!currentProject || !selectedChapter) return;
-      setLocalCalError(null);
-      setIsLocalCalPreparing(true);
-
-      try {
-        const startIdx = Math.max(0, lineIndex - 2);
-        const endIdx = Math.min(visibleScriptLines.length - 1, lineIndex + 2);
-        const windowLinesRaw = visibleScriptLines.slice(startIdx, endIdx + 1);
-        const windowLineIds = windowLinesRaw.map((l) => l.id);
-
-        // Determine per-line audio status (in this source / missing / other source)
-        const blobIds = windowLinesRaw.map((l) => l.audioBlobId).filter((id): id is string => !!id);
-        const blobs = await db.audioBlobs.bulkGet(blobIds);
-        const blobById = new Map<string, { sourceAudioId?: string }>();
-        blobs.forEach((b, idx) => {
-          const id = blobIds[idx];
-          if (id && b) blobById.set(id, { sourceAudioId: b.sourceAudioId });
-        });
-
-        const windowLines: LocalCalibrationWindowLine[] = windowLinesRaw.map((l) => {
-          const characterName =
-            characters.find((c) => c.id === l.characterId)?.name || (l.characterId ? '未知角色' : '旁白');
-          const blob = l.audioBlobId ? blobById.get(l.audioBlobId) : undefined;
-          const blobSourceId = blob?.sourceAudioId;
-          const status: LocalCalibrationWindowLine['status'] =
-            !l.audioBlobId
-              ? 'missing'
-              : blobSourceId === sourceAudioId
-                ? 'inSource'
-                : blobSourceId
-                  ? 'otherSource'
-                  : 'missing';
-
-          return { id: l.id, text: l.text, characterName, status, isCurrent: l.id === lineId };
-        });
-
-        const initialSkipLineIds = windowLines.filter((l) => l.status !== 'inSource').map((l) => l.id);
-
-        // Load markers (fallback to segments if needed)
-        const markerSet = await db.audioMarkers.get(sourceAudioId);
-        let markers = toSortedUnique(markerSet?.markers || []);
-
-        if (markers.length === 0) {
-          // Best-effort fallback: reconstruct from existing slices
-          const allSourceBlobs = await db.audioBlobs.where('sourceAudioId').equals(sourceAudioId).toArray();
-          const lineIdToPosition = new Map<string, number>();
-          let pos = 0;
-          for (const ch of currentProject.chapters) {
-            for (const ln of ch.scriptLines) {
-              lineIdToPosition.set(ln.id, pos++);
-            }
-          }
-          allSourceBlobs.sort((a, b) => {
-            const pa = lineIdToPosition.get(a.lineId) ?? Number.POSITIVE_INFINITY;
-            const pb = lineIdToPosition.get(b.lineId) ?? Number.POSITIVE_INFINITY;
-            return pa - pb;
-          });
-
-          const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-          try {
-            const rebuilt: number[] = [];
-            let cumulative = 0;
-            for (const b of allSourceBlobs) {
-              const decoded = await audioContext.decodeAudioData(await b.data.arrayBuffer());
-              cumulative += decoded.duration;
-              rebuilt.push(cumulative);
-            }
-            if (rebuilt.length > 0) rebuilt.pop();
-            markers = toSortedUnique(rebuilt);
-          } finally {
-            if (audioContext.state !== 'closed') await audioContext.close();
-          }
-        }
-
-        const masterAudio = await db.masterAudios.get(sourceAudioId);
-        if (!masterAudio) {
-          throw new Error('母带音频未找到：该句音频不是从“母带分段”生成的，无法做局部校准。');
-        }
-        const fullDuration = await getBlobDurationSeconds(masterAudio.data);
-        const cleanMarkers = toSortedUnique(markers.filter((t) => t > 0 && t < fullDuration));
-
-        // Build segment index mapping from current assignments (sourceAudioId -> lineId set)
-        const sourceBlobs = await db.audioBlobs.where('sourceAudioId').equals(sourceAudioId).toArray();
-        const sourceLineIdSet = new Set(sourceBlobs.map((b) => b.lineId).filter(Boolean));
-        const mappedLineIds: string[] = [];
-        for (const ch of currentProject.chapters) {
-          for (const ln of ch.scriptLines) {
-            if (sourceLineIdSet.has(ln.id)) mappedLineIds.push(ln.id);
-          }
-        }
-        const indexByLineId = new Map<string, number>();
-        mappedLineIds.forEach((id, idx) => indexByLineId.set(id, idx));
-
-        const segmentCount = cleanMarkers.length + 1;
-        if (mappedLineIds.length !== segmentCount) {
-          throw new Error(
-            `该母带当前“分段数”(${segmentCount}) 与 “已分配行数”(${mappedLineIds.length})不一致，无法做局部校准。\n` +
-              `建议：先对该母带做一次“自动对齐/全量校准”，让分段与已分配行重新一致。`,
-          );
-        }
-
-        const segIndices = windowLineIds
-          .filter((id) => sourceLineIdSet.has(id))
-          .map((id) => indexByLineId.get(id))
-          .filter((v): v is number => typeof v === 'number');
-
-        if (segIndices.length === 0) {
-          throw new Error('当前窗口内未找到属于该母带的音频片段，无法局部校准。');
-        }
-
-        const minSeg = Math.min(...segIndices);
-        const maxSeg = Math.max(...segIndices);
-        const boundaries = [0, ...cleanMarkers, fullDuration];
-        const windowStart = boundaries[minSeg];
-        const windowEnd = boundaries[maxSeg + 1];
-
-        const EPS = 1e-3;
-        if (!(windowEnd > windowStart + EPS)) {
-          throw new Error('局部窗口时间范围无效（结束时间必须大于开始时间）。');
-        }
-
-        const initialMarkers = cleanMarkers.filter((t) => t > windowStart + EPS && t < windowEnd - EPS);
-
-        setLocalCalDock({
-          sourceAudioInfo: { id: sourceAudioId, filename: sourceAudioFilename },
-          windowLineIds,
-          windowLines,
-          initialSkipLineIds,
-          markerRange: { min: windowStart, max: windowEnd },
-          initialMarkers,
-        });
-      } catch (e: unknown) {
-        console.error('Open local calibration dock failed:', e);
-        setLocalCalDock(null);
-        const msg = e instanceof Error ? e.message : '打开局部校准失败';
-        setLocalCalError(msg);
-        alert(msg);
-      } finally {
-        setIsLocalCalPreparing(false);
-      }
-    },
-    [characters, currentProject, selectedChapter, visibleScriptLines],
-  );
-   
+  
   const {
       currentPage,
       totalPages,
@@ -458,39 +278,12 @@ const AudioAlignmentPage: React.FC = () => {
       );
   };
 
-  const handleLocalCalibrationSave = useCallback(
-    async (args: { markers: number[]; skipLineIds: string[] }) => {
-      if (!currentProject || !localCalDock) return;
-      setIsLocalCalSaving(true);
-      try {
-        await resegmentAndRealignAudioWindow(
-          currentProject.id,
-          localCalDock.sourceAudioInfo.id,
-          localCalDock.windowLineIds,
-          args.skipLineIds,
-          localCalDock.markerRange.min,
-          localCalDock.markerRange.max,
-          args.markers,
-        );
-        setLocalCalError(null);
-        setLocalCalDock((prev) => {
-          if (!prev) return prev;
-          const nextSkip = new Set(args.skipLineIds);
-          return {
-            ...prev,
-            initialSkipLineIds: args.skipLineIds,
-            windowLines: prev.windowLines.map((l) => {
-              if (l.status === 'otherSource') return l;
-              return { ...l, status: nextSkip.has(l.id) ? 'missing' : 'inSource' };
-            }),
-          };
-        });
-      } finally {
-        setIsLocalCalSaving(false);
-      }
-    },
-    [currentProject, localCalDock, resegmentAndRealignAudioWindow],
-  );
+  const handleCalibrationSave = async (sourceAudioId: string, markers: number[]) => {
+    if (currentProject) {
+        await resegmentAndRealignAudio(currentProject.id, sourceAudioId, markers);
+    }
+    closeWaveformEditor();
+  };
 
   const handleToggleMultiSelect = useCallback((chapterId: string, event: React.MouseEvent) => {
     if (!currentProject) return;
@@ -591,10 +384,11 @@ const AudioAlignmentPage: React.FC = () => {
                 />
             }
             rightPanel={
-                <main className="p-4 transition-all" style={{ paddingBottom: store.playingLineInfo ? '8rem' : '1rem' }}>
-                  <div className="flex gap-4 items-start">
-                    <div className="min-w-0 flex-1">
-                      <ScriptLineList
+                <main 
+                    className="flex-grow p-4 overflow-y-auto transition-all" 
+                    style={{ paddingBottom: store.playingLineInfo ? '8rem' : '1rem' }}
+                >
+                    <ScriptLineList
                         selectedChapter={selectedChapter}
                         selectedChapterIndex={selectedChapterIndex!}
                         visibleScriptLines={visibleScriptLines}
@@ -604,27 +398,10 @@ const AudioAlignmentPage: React.FC = () => {
                         characterFilter={characterFilter}
                         activeRecordingLineId={activeRecordingLineId}
                         setActiveRecordingLineId={setActiveRecordingLineId}
-                        onRequestCalibration={openLocalCalibrationDock}
+                        openWaveformEditor={openWaveformEditor}
                         lineRefs={lineRefs}
                         projectId={currentProject.id}
-                      />
-                    </div>
-                    {localCalDock && (
-                      <LocalWaveformDockPanel
-                        isOpen={!!localCalDock}
-                        isSaving={isLocalCalSaving}
-                        isPreparing={isLocalCalPreparing}
-                        errorMessage={localCalError}
-                        sourceAudioInfo={localCalDock.sourceAudioInfo}
-                        windowLines={localCalDock.windowLines}
-                        initialSkipLineIds={localCalDock.initialSkipLineIds}
-                        markerRange={localCalDock.markerRange}
-                        initialMarkers={localCalDock.initialMarkers}
-                        onClose={() => setLocalCalDock(null)}
-                        onSave={handleLocalCalibrationSave}
-                      />
-                    )}
-                  </div>
+                    />
                 </main>
             }
             initialLeftWidthPercent={25}
@@ -646,6 +423,16 @@ const AudioAlignmentPage: React.FC = () => {
               isOpen={isSilenceSettingsModalOpen}
               onClose={() => setIsSilenceSettingsModalOpen(false)}
               project={currentProject}
+          />
+       )}
+       {waveformEditorState.isOpen && waveformEditorState.sourceAudioInfo && (
+          <AudioWaveformEditor
+            isOpen={waveformEditorState.isOpen}
+            onClose={closeWaveformEditor}
+            sourceAudioInfo={waveformEditorState.sourceAudioInfo}
+            currentLineId={waveformEditorState.lineId}
+            currentLineIndex={waveformEditorState.lineIndex}
+            onSave={handleCalibrationSave}
           />
        )}
     </div>

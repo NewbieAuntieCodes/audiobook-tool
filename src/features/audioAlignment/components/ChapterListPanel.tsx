@@ -64,7 +64,6 @@ const ChapterListPanel: React.FC<ChapterListPanelProps> = ({
                       type="checkbox"
                       checked={isMultiSelected}
                       onClick={(e) => handleToggleMultiSelect(chapter.id, e)}
-                      readOnly
                       className="form-checkbox h-4 w-4 text-sky-500 bg-slate-700 border-slate-600 rounded focus:ring-sky-400 cursor-pointer flex-shrink-0"
                       aria-label={`选择章节 ${displayTitle}`}
                     />

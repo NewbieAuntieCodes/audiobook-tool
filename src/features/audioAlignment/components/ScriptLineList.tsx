@@ -13,7 +13,7 @@ interface ScriptLineListProps {
   characterFilter: string;
   activeRecordingLineId: string | null;
   setActiveRecordingLineId: (id: string | null) => void;
-  onRequestCalibration: (lineId: string, lineIndex: number, sourceAudioId: string, sourceAudioFilename: string) => void;
+  openWaveformEditor: (lineId: string, lineIndex: number, sourceAudioId: string, sourceAudioFilename: string) => void;
   lineRefs: React.MutableRefObject<Map<string, HTMLDivElement>>;
   projectId: string;
 }
@@ -34,7 +34,7 @@ const ScriptLineList: React.FC<ScriptLineListProps> = ({
   characterFilter,
   activeRecordingLineId,
   setActiveRecordingLineId,
-  onRequestCalibration,
+  openWaveformEditor,
   lineRefs,
   projectId,
 }) => {
@@ -78,7 +78,7 @@ const ScriptLineList: React.FC<ScriptLineListProps> = ({
                     chapterId={selectedChapter.id}
                     projectId={projectId}
                     character={characters.find(c => c.id === line.characterId)}
-                    onRequestCalibration={onRequestCalibration}
+                    onRequestCalibration={openWaveformEditor}
                     isDimmed={isDimmed}
                     isRecordingActive={isRecordingMode && line.id === activeRecordingLineId}
                     onLineClick={() => isRecordingMode && setActiveRecordingLineId(line.id)}

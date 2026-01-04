@@ -26,15 +26,3 @@ dist-ssr
 # Local REAPER export artifacts
 *_ReaperExport/
 *_ReaperExport.zip
-
-# Local media / transcripts (test data)
-*.mp3
-*.wav
-*.m4a
-*.flac
-*.aac
-*.ogg
-*.opus
-*.docx
-*.srt
-*.vtt
