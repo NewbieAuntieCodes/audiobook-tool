@@ -60,7 +60,8 @@ const EditorPage: React.FC<EditorPageProps> = (props) => {
             <ResizablePanels
               leftPanel={<ChapterListPanel />}
               rightPanel={<ScriptEditorPanel />}
-              initialLeftWidthPercent={40}
+              initialLeftWidthPercent={26.7}
+              resizeMode="commit"
             />
           }
           rightPanel={
@@ -68,7 +69,8 @@ const EditorPage: React.FC<EditorPageProps> = (props) => {
               onDeleteCharacter={props.onDeleteCharacter}
             />
           }
-          initialLeftWidthPercent={65}
+          initialLeftWidthPercent={75}
+          resizeMode="commit"
         />
         <CharacterDetailsSidePanel
           character={characterForSidePanel}

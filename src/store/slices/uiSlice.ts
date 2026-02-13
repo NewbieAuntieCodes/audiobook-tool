@@ -27,6 +27,21 @@ export const defaultPostProductionLufsSettings: PostProductionLufsSettings = {
   music: { enabled: false, target: -40 },
 };
 
+export const SOUND_OBSERVATION_GLOBAL_CATEGORY_KEY = '__global__';
+
+const normalizeKeywordList = (list: string[]): string[] => {
+  const trimmed = (list || []).map((s) => (s || '').trim()).filter(Boolean);
+  return Array.from(new Set(trimmed)).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
+};
+
+const computeSoundObservationUnion = (map: Record<string, string[]>): string[] => {
+  const all: string[] = [];
+  for (const items of Object.values(map || {})) {
+    all.push(...(items || []));
+  }
+  return normalizeKeywordList(all);
+};
+
 
 export interface ConfirmModalState {
   isOpen: boolean;
@@ -76,6 +91,7 @@ export interface UiSlice {
   webSocketConnect: (() => void) | null;
   lufsSettings: LufsSettings;
   soundObservationList: string[];
+  soundObservationByCategory: Record<string, string[]>;
   isRecordingMode: boolean;
   postProductionLufsSettings: PostProductionLufsSettings;
 
@@ -122,6 +138,8 @@ export interface UiSlice {
   setLufsSettings: (settings: Partial<LufsSettings>) => Promise<void>;
   setPostProductionLufsSettings: (settings: Partial<PostProductionLufsSettings>) => Promise<void>;
   setSoundObservationList: (list: string[]) => Promise<void>;
+  setSoundObservationByCategory: (categoryKey: string, keywords: string[]) => Promise<void>;
+  replaceSoundObservationByCategory: (map: Record<string, string[]>) => Promise<void>;
   setRecordingMode: (enabled: boolean) => void;
   goToNextLine: () => Promise<void>;
 
@@ -160,6 +178,7 @@ export const createUiSlice: StateCreator<AppState, [], [], UiSlice> = (set, get)
   webSocketConnect: null,
   lufsSettings: { enabled: false, target: -18 },
   soundObservationList: [],
+  soundObservationByCategory: {},
   isRecordingMode: false,
   postProductionLufsSettings: defaultPostProductionLufsSettings,
 
@@ -251,8 +270,52 @@ export const createUiSlice: StateCreator<AppState, [], [], UiSlice> = (set, get)
     set({ characterShortcuts: shortcuts });
   },
   setSoundObservationList: async (list) => {
-    await miscRepository.saveSoundObservationList(list);
-    set({ soundObservationList: list });
+    const currentMap = get().soundObservationByCategory || {};
+    const normalized = normalizeKeywordList(list);
+    const nextMap = { ...currentMap };
+    if (normalized.length > 0) nextMap[SOUND_OBSERVATION_GLOBAL_CATEGORY_KEY] = normalized;
+    else delete nextMap[SOUND_OBSERVATION_GLOBAL_CATEGORY_KEY];
+
+    const union = computeSoundObservationUnion(nextMap);
+    await Promise.all([
+      miscRepository.saveSoundObservationByCategory(nextMap),
+      miscRepository.saveSoundObservationList(union),
+    ]);
+    set({ soundObservationByCategory: nextMap, soundObservationList: union });
+  },
+  setSoundObservationByCategory: async (categoryKey, keywords) => {
+    const key = (categoryKey || '').trim();
+    if (!key) return;
+
+    const currentMap = get().soundObservationByCategory || {};
+    const normalized = normalizeKeywordList(keywords);
+    const nextMap = { ...currentMap };
+    if (normalized.length > 0) nextMap[key] = normalized;
+    else delete nextMap[key];
+
+    const union = computeSoundObservationUnion(nextMap);
+    await Promise.all([
+      miscRepository.saveSoundObservationByCategory(nextMap),
+      miscRepository.saveSoundObservationList(union),
+    ]);
+    set({ soundObservationByCategory: nextMap, soundObservationList: union });
+  },
+  replaceSoundObservationByCategory: async (map) => {
+    const raw = map && typeof map === 'object' ? map : {};
+    const nextMap: Record<string, string[]> = {};
+    for (const [k, v] of Object.entries(raw)) {
+      const key = (k || '').trim();
+      if (!key) continue;
+      const normalized = normalizeKeywordList(Array.isArray(v) ? v : []);
+      if (normalized.length > 0) nextMap[key] = normalized;
+    }
+
+    const union = computeSoundObservationUnion(nextMap);
+    await Promise.all([
+      miscRepository.saveSoundObservationByCategory(nextMap),
+      miscRepository.saveSoundObservationList(union),
+    ]);
+    set({ soundObservationByCategory: nextMap, soundObservationList: union });
   },
   setAudioAlignmentCvFilter: (filter) => set({ audioAlignmentCvFilter: filter }),
   setAudioAlignmentCharacterFilter: (filter) => set({ audioAlignmentCharacterFilter: filter }),

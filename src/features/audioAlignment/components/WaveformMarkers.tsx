@@ -1,10 +1,15 @@
 import React from 'react';
 
+export interface WaveformMarker {
+  index: number;
+  time: number;
+}
+
 interface WaveformMarkersProps {
-  markers: number[];
+  markers: WaveformMarker[];
   pxPerSec: number;
   duration: number;
-  localLineIndex: number;
+  segmentIndex: number;
   selectedMarkerIndex: number | null;
   mousePosition: { x: number; time: number } | null;
   isDraggingMarker: boolean;
@@ -16,7 +21,7 @@ export const WaveformMarkers: React.FC<WaveformMarkersProps> = ({
   markers,
   pxPerSec,
   duration,
-  localLineIndex,
+  segmentIndex,
   selectedMarkerIndex,
   mousePosition,
   isDraggingMarker,
@@ -40,10 +45,10 @@ export const WaveformMarkers: React.FC<WaveformMarkersProps> = ({
       )}
 
       {/* Render all markers */}
-      {markers.map((time, index) => {
+      {markers.map(({ index, time }) => {
         const leftPx = Math.max(0, (time || 0) * pxPerSec);
-        const isStartMarker = localLineIndex > 0 && index === localLineIndex - 1;
-        const isEndMarker = index === localLineIndex;
+        const isStartMarker = segmentIndex > 0 && index === segmentIndex - 1;
+        const isEndMarker = index === segmentIndex;
         const isHighlighted = isStartMarker || isEndMarker;
         const isSelected = selectedMarkerIndex === index;
 

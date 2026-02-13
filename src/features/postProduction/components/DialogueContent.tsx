@@ -31,6 +31,7 @@ interface DialogueContentProps {
   currentProject: Project | null;
   onPinSound: (lineId: string, chapterId: string, charIndex: number, keyword: string, soundId: number | null, soundName: string | null) => void;
   onUpdateLineText: (projectId: string, chapterId: string, lineId: string, newText: string) => Promise<void>;
+  onOpenEditMarker: (marker: TextMarker | null) => void;
 }
 
 interface HighlightedLineProps {
@@ -105,6 +106,7 @@ export const DialogueContent: React.FC<DialogueContentProps> = ({
   currentProject,
   onPinSound,
   onUpdateLineText,
+  onOpenEditMarker,
 }) => {
     const { contentRef, bgmLabelOverlays } = useMarkerRendering(textMarkers, chapters, suspendLayout, expandedChapterId);
     const [popoverState, setPopoverState] = useState<{ visible: boolean; keyword: string; top: number; left: number; lineId: string; chapterId: string; index: number; } | null>(null);
@@ -594,28 +596,63 @@ export const DialogueContent: React.FC<DialogueContentProps> = ({
                             </h4>
                             {isExpanded && (
                                 <div className="space-y-3">
-                                    {chapter.scriptLines.map((line: any, index: number) => {
-                                        const startingScene = textMarkers.find(m => m.type === 'scene' && m.startLineId === line.id);
-                                        const char = characters.find(c => c.id === line.characterId);
-                                        const nameForCheck = (char?.name || '').replace(/[\[\]()]/g, '').toLowerCase();
-                                        const isSfx = nameForCheck === '音效' || nameForCheck === 'sfx';
-                                        const display = isSfx ? bracketIfNeeded(line.text) : line.text;
-                                        const wrapperClass = '';
+                                      {chapter.scriptLines.map((line: any, index: number) => {
+                                          const startingScene = textMarkers.find(m => m.type === 'scene' && m.startLineId === line.id);
+                                          const startingSfxGroups = textMarkers.filter(m => m.type === 'sfxGroup' && m.startLineId === line.id);
+                                          const char = characters.find(c => c.id === line.characterId);
+                                          const nameForCheck = (char?.name || '').replace(/[\[\]()]/g, '').toLowerCase();
+                                          const isSfx = nameForCheck === '音效' || nameForCheck === 'sfx';
+                                          const display = isSfx ? bracketIfNeeded(line.text) : line.text;
+                                          const wrapperClass = '';
 
-                                        return (
-                                          <div key={line.id} className={wrapperClass}>
-                                              {startingScene && (
-                                                <div className="flex items-center gap-x-4 my-4">
-                                                    <div className="w-24 flex-shrink-0" />
-                                                    <div className="scene-divider flex-grow">
-                                                        <span className="scene-divider-text">场景：{startingScene.name}</span>
-                                                    </div>
-                                                </div>
-                                              )}
-                                              <div data-line-id={line.id} className="flex items-start gap-x-4">
-                                                  <div className="w-24 pt-1 text-right text-slate-500 select-none flex-shrink-0 font-mono text-xs" contentEditable={false}>{index + 1}</div>
-                                                  <HighlightedLine 
-                                                      lineId={line.id}
+                                         return (
+                                           <div key={line.id} className={wrapperClass}>
+                                                {startingScene && (
+                                                  <div
+                                                    className="flex items-center gap-x-4 my-4"
+                                                    contentEditable={false}
+                                                    suppressContentEditableWarning={true}
+                                                  >
+                                                     <div className="w-24 flex-shrink-0" />
+                                                     <div
+                                                       className="scene-divider flex-grow cursor-pointer hover:opacity-95"
+                                                       title="双击编辑场景"
+                                                       onMouseUp={(e) => e.stopPropagation()}
+                                                       onDoubleClick={(e) => {
+                                                         e.preventDefault();
+                                                         e.stopPropagation();
+                                                         onOpenEditMarker(startingScene);
+                                                       }}
+                                                     >
+                                                         <span className="scene-divider-text">场景：{startingScene.name}</span>
+                                                      </div>
+                                                  </div>
+                                                )}
+                                                {startingSfxGroups.length > 0 && (
+                                                  <div className="space-y-2 my-3" contentEditable={false} suppressContentEditableWarning={true}>
+                                                    {startingSfxGroups.map((m) => (
+                                                      <div key={m.id} className="flex items-center gap-x-4">
+                                                        <div className="w-24 flex-shrink-0" />
+                                                        <div
+                                                          className="sfx-group-divider flex-grow cursor-pointer hover:opacity-95"
+                                                          title="双击编辑音效组插入点"
+                                                          onMouseUp={(e) => e.stopPropagation()}
+                                                          onDoubleClick={(e) => {
+                                                            e.preventDefault();
+                                                            e.stopPropagation();
+                                                            onOpenEditMarker(m);
+                                                          }}
+                                                        >
+                                                          <span className="sfx-group-divider-text">音效组：{m.name || '未命名'}</span>
+                                                        </div>
+                                                      </div>
+                                                    ))}
+                                                  </div>
+                                                )}
+                                                <div data-line-id={line.id} className="flex items-start gap-x-4">
+                                                    <div className="w-24 pt-1 text-right text-slate-500 select-none flex-shrink-0 font-mono text-xs" contentEditable={false}>{index + 1}</div>
+                                                   <HighlightedLine 
+                                                       lineId={line.id}
                                                       chapterId={chapter.id}
                                                       text={display} 
                                                       soundLibrary={soundLibrary} 

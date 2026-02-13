@@ -4,7 +4,7 @@ import { AppView, CVStylesMap, PresetColor, SoundLibraryItem, IgnoredSoundKeywor
 import { Project, Character, MergeHistoryEntry } from '../types';
 
 // Import slice creators and their state/action types
-import { createUiSlice, UiSlice, LufsSettings, defaultPostProductionLufsSettings } from './slices/uiSlice';
+import { createUiSlice, UiSlice, LufsSettings, defaultPostProductionLufsSettings, SOUND_OBSERVATION_GLOBAL_CATEGORY_KEY } from './slices/uiSlice';
 import { createProjectSlice, ProjectSlice } from './slices/projectSlice';
 import { createProjectAudioSlice, ProjectAudioSlice } from './slices/projectAudioSlice';
 import { createCharacterSlice, CharacterSlice } from './slices/characterSlice';
@@ -33,6 +33,44 @@ const defaultCharConfigs = [
   { name: 'Narrator', color: 'bg-slate-600', textColor: 'text-slate-100', description: '默认旁白角色' },
   { name: '待识别角色', color: 'bg-orange-400', textColor: 'text-black', description: '由系统自动识别但尚未分配的角色' },
   { name: '[音效]', color: 'bg-transparent', textColor: 'text-red-500', description: '用于标记音效的文字描述' },
+];
+
+const LEGACY_DEFAULT_CV_PRESET_BG_TEXT_PAIRS_V1: Array<[string, string]> = [
+  ['bg-red-400', 'text-black'],
+  ['bg-orange-400', 'text-black'],
+  ['bg-yellow-300', 'text-black'],
+  ['bg-lime-400', 'text-black'],
+  ['bg-cyan-400', 'text-black'],
+  ['bg-sky-400', 'text-black'],
+  ['bg-violet-400', 'text-black'],
+  ['bg-pink-400', 'text-black'],
+
+  ['bg-red-700', 'text-white'],
+  ['bg-orange-700', 'text-white'],
+  ['bg-yellow-700', 'text-white'],
+  ['bg-lime-700', 'text-white'],
+  ['bg-cyan-700', 'text-white'],
+  ['bg-blue-700', 'text-white'],
+  ['bg-violet-700', 'text-white'],
+  ['bg-pink-700', 'text-white'],
+
+  ['bg-rose-500', 'text-black'],
+  ['bg-amber-400', 'text-black'],
+  ['bg-yellow-400', 'text-black'],
+  ['bg-emerald-500', 'text-black'],
+  ['bg-teal-500', 'text-black'],
+  ['bg-sky-500', 'text-black'],
+  ['bg-indigo-500', 'text-white'],
+  ['bg-fuchsia-500', 'text-black'],
+
+  ['bg-rose-900', 'text-white'],
+  ['bg-amber-800', 'text-white'],
+  ['bg-yellow-800', 'text-white'],
+  ['bg-green-800', 'text-white'],
+  ['bg-teal-800', 'text-white'],
+  ['bg-blue-800', 'text-white'],
+  ['bg-indigo-800', 'text-white'],
+  ['bg-purple-800', 'text-white'],
 ];
 
 export const useStore = create<AppState>((set, get, api) => ({
@@ -84,22 +122,89 @@ export const useStore = create<AppState>((set, get, api) => ({
         selectedAiProvider,
         characterShortcuts,
         soundObservationList,
+        soundObservationByCategory,
       } = miscData;
+
+      const normalizedSoundObservationByCategory: Record<string, string[]> = (() => {
+        const map = (soundObservationByCategory && typeof soundObservationByCategory === 'object')
+          ? soundObservationByCategory
+          : {};
+        if (Object.keys(map).length > 0) return map;
+        if (Array.isArray(soundObservationList) && soundObservationList.length > 0) {
+          return { [SOUND_OBSERVATION_GLOBAL_CATEGORY_KEY]: soundObservationList };
+        }
+        return {};
+      })();
+
+      const normalizedSoundObservationList = (() => {
+        const all: string[] = [];
+        for (const items of Object.values(normalizedSoundObservationByCategory)) {
+          all.push(...(items || []));
+        }
+        const trimmed = all.map((s) => (s || '').trim()).filter(Boolean);
+        return Array.from(new Set(trimmed)).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
+      })();
 
       const projects = projectsFromDb.map(p => ({ ...p, cvStyles: p.cvStyles || {} }));
       const lufsSettings = lufsSettingsItem?.value || { enabled: false, target: -18 };
       const postProductionLufsSettings =
         postProductionLufsSettingsItem?.value || defaultPostProductionLufsSettings;
-      
+
       let cvColorPresets = cvColorPresetsFromDb;
       if (!cvColorPresets || !Array.isArray(cvColorPresets) || cvColorPresets.length === 0) {
         cvColorPresets = defaultCvPresetColors;
         await db.misc.put({ key: 'cvColorPresets', value: cvColorPresets });
+      } else {
+        const colorsMatchLegacyCvPresets = (presets: PresetColor[], expectedPairs: Array<[string, string]>) => {
+          if (!Array.isArray(presets) || presets.length !== expectedPairs.length) return false;
+          for (let i = 0; i < presets.length; i++) {
+            const p = presets[i];
+            const [bg, text] = expectedPairs[i];
+            if (!p) return false;
+            if (p.bgColorClass !== bg) return false;
+            if (p.textColorClass !== text) return false;
+          }
+          return true;
+        };
+
+        const legacy16 = LEGACY_DEFAULT_CV_PRESET_BG_TEXT_PAIRS_V1.slice(0, 16);
+        const legacy32 = LEGACY_DEFAULT_CV_PRESET_BG_TEXT_PAIRS_V1;
+
+        const migrateLegacyCvPresets = (existing: PresetColor[]) => {
+          const preservedNames = (existing || []).map((p) => p?.name);
+          return defaultCvPresetColors.map((p, idx) => ({
+            ...p,
+            name: preservedNames[idx] || p.name,
+          }));
+        };
+
+        if (cvColorPresets.length === 16 && colorsMatchLegacyCvPresets(cvColorPresets, legacy16)) {
+          // Migrate: old 2x8 defaults -> new expanded defaults (preserve user-renamed labels)
+          cvColorPresets = migrateLegacyCvPresets(cvColorPresets);
+          await db.misc.put({ key: 'cvColorPresets', value: cvColorPresets });
+        } else if (cvColorPresets.length < defaultCvPresetColors.length) {
+          // Backward-compatible: when defaults expand, keep user edits and append new defaults.
+          cvColorPresets = [
+            ...cvColorPresets,
+            ...defaultCvPresetColors.slice(cvColorPresets.length),
+          ];
+          await db.misc.put({ key: 'cvColorPresets', value: cvColorPresets });
+        } else if (cvColorPresets.length === 32 && colorsMatchLegacyCvPresets(cvColorPresets, legacy32)) {
+          // Migrate: replace legacy 4x8 palette when colors are unchanged (preserve user-renamed labels)
+          cvColorPresets = migrateLegacyCvPresets(cvColorPresets);
+          await db.misc.put({ key: 'cvColorPresets', value: cvColorPresets });
+        }
       }
 
       let characterColorPresets = characterColorPresetsFromDb;
       if (!characterColorPresets || !Array.isArray(characterColorPresets) || characterColorPresets.length === 0) {
         characterColorPresets = defaultCharacterPresetColors;
+        await db.misc.put({ key: 'characterColorPresets', value: characterColorPresets });
+      } else if (characterColorPresets.length < defaultCharacterPresetColors.length) {
+        characterColorPresets = [
+          ...characterColorPresets,
+          ...defaultCharacterPresetColors.slice(characterColorPresets.length),
+        ];
         await db.misc.put({ key: 'characterColorPresets', value: characterColorPresets });
       }
       
@@ -177,9 +282,72 @@ export const useStore = create<AppState>((set, get, api) => ({
         unknownIdByProject.set(project.id, created.id);
       }
 
+      // Ensure functional roles exist so "确实无音" can be expressed via角色（[静音]/[音效]）.
+      const SILENT_ROLE_KEYS = new Set(['[静音]', '静音'].map(normalizeCharacterNameKey));
+      const SFX_ROLE_KEYS = new Set(['[音效]', '音效', 'sfx'].map(normalizeCharacterNameKey));
+      const NON_AUDIO_ROLE_KEYS = new Set([...SILENT_ROLE_KEYS, ...SFX_ROLE_KEYS]);
+
+      const specialRolesToCreate: Character[] = [];
+      const silentIdByProject = new Map<string, string>();
+
+      const findRole = (projectId: string, keys: Set<string>) => {
+        return (
+          normalizedCharacters.find(
+            (c) =>
+              c.projectId === projectId &&
+              c.status !== 'merged' &&
+              keys.has(normalizeCharacterNameKey(c.name)),
+          ) ||
+          normalizedCharacters.find(
+            (c) => !c.projectId && c.status !== 'merged' && keys.has(normalizeCharacterNameKey(c.name)),
+          )
+        );
+      };
+
+      for (const project of projects) {
+        const silentRole = findRole(project.id, SILENT_ROLE_KEYS);
+        if (silentRole) {
+          silentIdByProject.set(project.id, silentRole.id);
+        } else {
+          const created: Character = {
+            id: `${Date.now()}_char_silent_${project.id}_${Math.random().toString(36).slice(2, 8)}`,
+            name: '[静音]',
+            projectId: project.id,
+            color: 'bg-slate-700',
+            textColor: 'text-slate-400',
+            cvName: '',
+            description: '用于标记无需录制的旁白提示',
+            isStyleLockedToCv: false,
+            status: 'active',
+          };
+          normalizedCharacters.push(created);
+          specialRolesToCreate.push(created);
+          silentIdByProject.set(project.id, created.id);
+        }
+
+        const sfxRole = findRole(project.id, SFX_ROLE_KEYS);
+        if (!sfxRole) {
+          const created: Character = {
+            id: `${Date.now()}_char_sfx_${project.id}_${Math.random().toString(36).slice(2, 8)}`,
+            name: '[音效]',
+            projectId: project.id,
+            color: 'bg-transparent',
+            textColor: 'text-red-500',
+            cvName: '',
+            description: '用于标记音效的文字描述',
+            isStyleLockedToCv: true,
+            status: 'active',
+          };
+          normalizedCharacters.push(created);
+          specialRolesToCreate.push(created);
+        }
+      }
+
       const fixedProjects: Project[] = projects.map((project) => {
         const unknownId = unknownIdByProject.get(project.id);
         if (!unknownId) return project;
+
+        const silentId = silentIdByProject.get(project.id) || '';
 
         const validIds = new Set(
           normalizedCharacters
@@ -188,10 +356,25 @@ export const useStore = create<AppState>((set, get, api) => ({
             .map((c) => c.id),
         );
 
+        const nonAudioIds = new Set(
+          normalizedCharacters
+            .filter((c) => c.status !== 'merged')
+            .filter((c) => !c.projectId || c.projectId === project.id)
+            .filter((c) => NON_AUDIO_ROLE_KEYS.has(normalizeCharacterNameKey(c.name)))
+            .map((c) => c.id),
+        );
+
         let changed = false;
         const nextChapters = project.chapters.map((ch) => {
           let chapterChanged = false;
           const nextLines = ch.scriptLines.map((line) => {
+            if (line.isNoAudio) {
+              chapterChanged = true;
+              changed = true;
+              const { isNoAudio: _ignored, ...rest } = line;
+              const nextCharacterId = nonAudioIds.has(line.characterId || '') ? (line.characterId as string) : (silentId || unknownId);
+              return { ...rest, characterId: nextCharacterId, audioBlobId: undefined };
+            }
             const cid = line.characterId || '';
             if (!cid || !validIds.has(cid)) {
               chapterChanged = true;
@@ -207,10 +390,11 @@ export const useStore = create<AppState>((set, get, api) => ({
       });
 
       const projectsToFixInDb = fixedProjects.filter((p, idx) => p !== projects[idx]);
-      if (unknownsToCreate.length > 0 || projectsToFixInDb.length > 0) {
+      const charsToCreate = unknownsToCreate.concat(specialRolesToCreate);
+      if (charsToCreate.length > 0 || projectsToFixInDb.length > 0) {
         await db.transaction('rw', db.characters, db.projects, async () => {
-          if (unknownsToCreate.length > 0) {
-            await db.characters.bulkPut(unknownsToCreate);
+          if (charsToCreate.length > 0) {
+            await db.characters.bulkPut(charsToCreate);
           }
           if (projectsToFixInDb.length > 0) {
             await db.projects.bulkPut(projectsToFixInDb);
@@ -235,7 +419,8 @@ export const useStore = create<AppState>((set, get, api) => ({
         selectedAiProvider,
         characterShortcuts,
         lufsSettings,
-        soundObservationList,
+        soundObservationList: normalizedSoundObservationList,
+        soundObservationByCategory: normalizedSoundObservationByCategory,
         postProductionLufsSettings,
         currentView: initialView,
         aiProcessingChapterIds: [], // Reset on load
@@ -255,6 +440,7 @@ export const useStore = create<AppState>((set, get, api) => ({
         isLoading: false,
         soundLibrary: [],
         soundObservationList: [],
+        soundObservationByCategory: {},
       });
     }
   },

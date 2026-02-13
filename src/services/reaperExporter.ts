@@ -3,6 +3,7 @@ import { db } from '../db';
 import { Project, Chapter, Character, ScriptLine, LineType, SilencePairing } from '../types';
 import { defaultSilenceSettings } from '../lib/defaultSilenceSettings';
 import { bufferToWav } from '../lib/wavEncoder';
+import { bufferToMp3 } from '../lib/mp3Encoder';
 
 // --- Helper Functions ---
 
@@ -19,10 +20,22 @@ const sanitizeFilename = (name: string, maxLength: number = 200): string => {
     return trimmed;
 };
 
+const getRppSourceTypeFromFileName = (fileName: string): 'WAVE' | 'MP3' => {
+    return fileName.toLowerCase().endsWith('.mp3') ? 'MP3' : 'WAVE';
+};
+
 const getLineType = (line: ScriptLine | undefined, characters: Character[]): LineType => {
     if (!line || !line.characterId) return 'narration';
     const character = characters.find(c => c.id === line.characterId);
-    if (!character || character.name === 'Narrator' || character.name === '[静音]') return 'narration';
+    if (
+        !character ||
+        character.name === 'Narrator' ||
+        character.name === '旁白' ||
+        character.name === '[旁白]' ||
+        character.name === '[静音]'
+    ) {
+        return 'narration';
+    }
     if (character.name === '音效' || character.name === '[音效]') return 'sfx';
     return 'dialogue';
 };
@@ -43,13 +56,14 @@ interface TimelineItem {
 const generateRppTrackItems = (items: TimelineItem[], sourceFileName: string): string => {
     // Use ITEM-level SOFFS for maximum compatibility across REAPER versions.
     // Each ITEM references the same concatenated WAV and plays from SOFFS.
+    const sourceType = getRppSourceTypeFromFileName(sourceFileName);
     return items.map(item => `
     <ITEM
       POSITION ${item.mainTimelineStartTime.toFixed(6)}
       LENGTH ${item.duration.toFixed(6)}
       NAME "${sanitizeForRpp(item.generatedItemName)}"
       SOFFS ${item.sourceStartTime.toFixed(6)}
-      <SOURCE WAVE
+      <SOURCE ${sourceType}
         FILE "${sanitizeForRpp(sourceFileName)}"
       >
     >
@@ -91,11 +105,13 @@ ${tracksRpp}
 export const exportToReaperProject = async (
     project: Project,
     chaptersToExport: Chapter[],
-    allCharacters: Character[]
+    allCharacters: Character[],
+    options?: { audioFormat?: 'wav' | 'mp3'; mp3BitrateKbps?: number }
 ): Promise<void> => {
     const { silenceSettings = defaultSilenceSettings } = project;
     const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
     const zip = new JSZip();
+    const audioFormat = options?.audioFormat ?? 'wav';
 
     try {
         // Step 1: Collect all lines with audio blobs, decode them, and sort them chronologically.
@@ -188,9 +204,14 @@ export const exportToReaperProject = async (
         });
 
         const singleConcatenatedBuffer = await offlineCtx.startRendering();
-        const singleWavBlob = bufferToWav(singleConcatenatedBuffer);
-        const singleAudioFilename = `${sanitizeFilename(project.name)}_Audio.wav`;
-        zip.file(singleAudioFilename, singleWavBlob);
+        const singleAudioBlob =
+            audioFormat === 'mp3'
+                ? bufferToMp3(singleConcatenatedBuffer, { bitrateKbps: options?.mp3BitrateKbps })
+                : bufferToWav(singleConcatenatedBuffer);
+        const singleAudioFilename = `${sanitizeFilename(project.name)}_Audio.${
+            audioFormat === 'mp3' ? 'mp3' : 'wav'
+        }`;
+        zip.file(singleAudioFilename, singleAudioBlob);
         
         // Step 4: Group items by track type for RPP generation
         const tracks: Record<string, TimelineItem[]> = { narration: [], dialogue: [], os: [], telephone: [], system: [], other: [] };
@@ -198,7 +219,7 @@ export const exportToReaperProject = async (
 
         finalTimelineItems.forEach(item => {
             const soundType = item.line.soundType;
-            if (item.character?.name === 'Narrator') tracks.narration.push(item);
+            if (getLineType(item.line, allCharacters) === 'narration') tracks.narration.push(item);
             else if (soundType === 'OS') tracks.os.push(item);
             else if (soundType === '电话音') tracks.telephone.push(item);
             else if (soundType === '系统音') tracks.system.push(item);
@@ -232,8 +253,10 @@ Reaper 现在应该能正确加载所有音轨和对应的音频片段了。
 ---
 **新工作流说明**
 
-- **文件极简**：您的项目文件夹现在非常干净。只有一个 .RPP 工程文件和一个包含所有音频的 .wav 文件。
+- **文件极简**：您的项目文件夹现在非常干净。只有一个 .RPP 工程文件和一个包含所有音频的 .${audioFormat === 'mp3' ? 'mp3' : 'wav'} 文件。
 - **灵活性不变**：在 Reaper 中，这个长文件已被自动“切割”成独立的、可拖动的小片段，与之前的版本在操作上完全一致！
+
+${audioFormat === 'mp3' ? `注意：MP3 为有损压缩，且不同软件对 MP3 的编码延迟处理可能略有差异。如需最精准的样本级对齐与后期处理，建议改用 WAV 导出。` : ''}
 
 这意味着，您仍然可以：
 - **精准对轨**：精确调整每一句台词的时间。

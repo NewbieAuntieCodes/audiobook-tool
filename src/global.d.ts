@@ -90,6 +90,25 @@ declare global {
       };
       error?: string;
     }>;
+
+    writeAuditionCuePoints?: (payload: {
+      audioPath: string;
+      transcriptPath: string;
+      outputPath?: string | null;
+      overwrite?: boolean;
+    }) => Promise<{
+      success: boolean;
+      outputPath?: string;
+      markerCount?: number;
+      sampleRate?: number;
+      error?: string;
+    }>;
+
+    cleanTranscriptText?: (payload: { text: string; removeEmptyLines?: boolean }) => Promise<{
+      success: boolean;
+      text?: string;
+      error?: string;
+    }>;
   }
 
   interface Window {

@@ -13,25 +13,45 @@ const presetNames = [
 
 // Palette for CV Presets
 const cvColorPalette: Omit<PresetColor, 'name'>[] = [
-  // Row 1: Bright colors with black text
-  { bgColorClass: 'bg-red-400', textColorClass: 'text-black' },
-  { bgColorClass: 'bg-orange-400', textColorClass: 'text-black' },
-  { bgColorClass: 'bg-yellow-300', textColorClass: 'text-black' },
-  { bgColorClass: 'bg-lime-400', textColorClass: 'text-black' },
-  { bgColorClass: 'bg-cyan-400', textColorClass: 'text-black' },
-  { bgColorClass: 'bg-sky-400', textColorClass: 'text-black' },
-  { bgColorClass: 'bg-violet-400', textColorClass: 'text-black' },
-  { bgColorClass: 'bg-pink-400', textColorClass: 'text-black' },
+  // Row 1: Medium, saturated (black text)
+  { bgColorClass: '#FF4D4D', textColorClass: '#000000' }, // Red
+  { bgColorClass: '#FF922B', textColorClass: '#000000' }, // Orange
+  { bgColorClass: '#FFD43B', textColorClass: '#000000' }, // Yellow
+  { bgColorClass: '#51CF66', textColorClass: '#000000' }, // Green
+  { bgColorClass: '#22B8CF', textColorClass: '#000000' }, // Cyan
+  { bgColorClass: '#4DABF7', textColorClass: '#000000' }, // Blue
+  { bgColorClass: '#748FFC', textColorClass: '#000000' }, // Indigo
+  { bgColorClass: '#B197FC', textColorClass: '#000000' }, // Purple
 
-  // Row 2: Darker colors with white text
-  { bgColorClass: 'bg-red-700', textColorClass: 'text-white' },
-  { bgColorClass: 'bg-orange-700', textColorClass: 'text-white' },
-  { bgColorClass: 'bg-yellow-700', textColorClass: 'text-white' },
-  { bgColorClass: 'bg-lime-700', textColorClass: 'text-white' },
-  { bgColorClass: 'bg-cyan-700', textColorClass: 'text-white' },
-  { bgColorClass: 'bg-blue-700', textColorClass: 'text-white' },
-  { bgColorClass: 'bg-violet-700', textColorClass: 'text-white' },
-  { bgColorClass: 'bg-pink-700', textColorClass: 'text-white' },
+  // Row 2: Dark (rotated order; white text)
+  { bgColorClass: '#2F9E44', textColorClass: '#FFFFFF' }, // Green (dark)
+  { bgColorClass: '#0B7285', textColorClass: '#FFFFFF' }, // Cyan (dark)
+  { bgColorClass: '#1971C2', textColorClass: '#FFFFFF' }, // Blue (dark)
+  { bgColorClass: '#364FC7', textColorClass: '#FFFFFF' }, // Indigo (dark)
+  { bgColorClass: '#5F3DC4', textColorClass: '#FFFFFF' }, // Purple (dark)
+  { bgColorClass: '#B00020', textColorClass: '#FFFFFF' }, // Red (dark)
+  { bgColorClass: '#9A3412', textColorClass: '#FFFFFF' }, // Orange (dark)
+  { bgColorClass: '#8A6A00', textColorClass: '#FFFFFF' }, // Yellow (dark)
+
+  // Row 3: Pastels (rotated order; black text)
+  { bgColorClass: '#D0EBFF', textColorClass: '#000000' }, // Blue (light)
+  { bgColorClass: '#EDF2FF', textColorClass: '#000000' }, // Indigo (light)
+  { bgColorClass: '#F3D9FA', textColorClass: '#000000' }, // Purple (light)
+  { bgColorClass: '#FFD6D6', textColorClass: '#000000' }, // Red (light)
+  { bgColorClass: '#FFE8CC', textColorClass: '#000000' }, // Orange (light)
+  { bgColorClass: '#FFF3BF', textColorClass: '#000000' }, // Yellow (light)
+  { bgColorClass: '#D3F9D8', textColorClass: '#000000' }, // Green (light)
+  { bgColorClass: '#C5F6FA', textColorClass: '#000000' }, // Cyan (light)
+
+  // Row 4: Deep (rotated order; white text)
+  { bgColorClass: '#2B0A3D', textColorClass: '#FFFFFF' }, // Purple (deep)
+  { bgColorClass: '#4B0000', textColorClass: '#FFFFFF' }, // Red (deep)
+  { bgColorClass: '#431407', textColorClass: '#FFFFFF' }, // Orange (deep)
+  { bgColorClass: '#332700', textColorClass: '#FFFFFF' }, // Yellow (deep)
+  { bgColorClass: '#0B3D20', textColorClass: '#FFFFFF' }, // Green (deep)
+  { bgColorClass: '#00343D', textColorClass: '#FFFFFF' }, // Cyan (deep)
+  { bgColorClass: '#002766', textColorClass: '#FFFFFF' }, // Blue (deep)
+  { bgColorClass: '#1B1E5A', textColorClass: '#FFFFFF' }, // Indigo (deep)
 ];
 
 // Palette for Character Presets - distinct variations from the CV palette
@@ -58,7 +78,7 @@ const characterColorPalette: Omit<PresetColor, 'name'>[] = [
 ];
 
 
-// 2x8 grid = 16 colors for CV Presets.
+// 4x8 grid = 32 colors for CV Presets.
 export const defaultCvPresetColors: PresetColor[] = cvColorPalette.map((preset, index) => ({
   ...preset,
   name: presetNames[index] || `Preset ${index + 1}`,

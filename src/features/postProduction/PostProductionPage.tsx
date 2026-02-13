@@ -6,6 +6,7 @@ import SoundLibraryPanel from './components/SoundLibraryPanel';
 import AddSceneModal from './components/AddSceneModal';
 import AddBgmModal from './components/AddBgmModal';
 import AddSfxModal from './components/AddSfxModal';
+import SoundGroupModal from './components/SoundGroupModal';
 import EditMarkerModal from './components/EditMarkerModal';
 import SoundAssistantSettingsModal from './components/SoundAssistantSettingsModal';
 import PostTextAssistantModal from './components/PostTextAssistantModal';
@@ -17,6 +18,29 @@ import Timeline from './components/timeline/Timeline';
 import ResizablePanels from '../../components/ui/ResizablePanels';
 import ResizableVerticalPanels from '../../components/ui/ResizableVerticalPanels';
 import { TextMarker } from '../../types';
+
+const parseChapterFilter = (
+    raw: string,
+): { kind: 'none' } | { kind: 'single'; n: number } | { kind: 'range'; start: number; end: number } | { kind: 'keyword'; keyword: string } => {
+    const s = (raw || '').trim();
+    if (!s) return { kind: 'none' };
+
+    const range = s.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (range) {
+        const start = parseInt(range[1], 10);
+        const end = parseInt(range[2], 10);
+        if (Number.isFinite(start) && Number.isFinite(end)) {
+            return start <= end ? { kind: 'range', start, end } : { kind: 'range', start: end, end: start };
+        }
+    }
+
+    if (/^\d+$/.test(s)) {
+        const n = parseInt(s, 10);
+        if (Number.isFinite(n)) return { kind: 'single', n };
+    }
+
+    return { kind: 'keyword', keyword: s };
+};
 
 const PostProductionPage: React.FC = () => {
     const { navigateTo, soundLibrary, soundObservationList, characters, selectedChapterId: initialChapterId, postProductionLufsSettings, setSelectedChapterId } = useStore(state => ({
@@ -32,10 +56,12 @@ const PostProductionPage: React.FC = () => {
     const {
         currentProject,
         textMarkers,
+        soundGroups,
         selectedRange,
         isSceneModalOpen,
         isBgmModalOpen,
         isSfxModalOpen,
+        isSoundGroupModalOpen,
         editingMarker,
         suspendLayout,
         handleTextSelect,
@@ -45,14 +71,21 @@ const PostProductionPage: React.FC = () => {
         closeBgmModal,
         openSfxModal,
         closeSfxModal,
+        openSoundGroupModal,
+        closeSoundGroupModal,
         openEditModal,
         closeEditModal,
         handleSaveScene,
         handleSaveBgm,
         handleSaveSfx,
+        handleInsertSoundGroup,
+        handleUpsertSoundGroup,
+        handleDeleteSoundGroup,
         handleDeleteMarker,
         handleRenameMarker,
         handleUpdateRangeFromSelection,
+        handleUpdateAnchorFromSelection,
+        handleChangeSfxGroupMarkerGroup,
         handleUpdateColor,
         handlePinSound,
         handleClearFormatting,
@@ -65,6 +98,7 @@ const PostProductionPage: React.FC = () => {
     const [expandedChapterId, setExpandedChapterId] = useState<string | null>(null);
     const [contextMenu, setContextMenu] = useState<{ top: number; left: number; range: Range } | null>(null);
     const [isExportingToReaper, setIsExportingToReaper] = useState(false);
+    const [reaperExportAudioFormat, setReaperExportAudioFormat] = useState<'wav' | 'mp3'>('mp3');
 
 
     useEffect(() => {
@@ -103,21 +137,49 @@ const PostProductionPage: React.FC = () => {
     }, [currentProject, silentCharIds]);
 
     const filteredChaptersForDisplay = useMemo(() => {
-        const filter = chapterFilter.trim();
-        if (!filter) return chaptersForDisplay;
+        const parsed = parseChapterFilter(chapterFilter);
+        if (parsed.kind === 'none') return chaptersForDisplay;
         const matches = (title: string, index: number) => {
             const chapterNum = index + 1;
-            const m = filter.match(/^(\d+)-(\d+)$/);
-            if (m) {
-                const start = parseInt(m[1], 10);
-                const end = parseInt(m[2], 10);
-                return chapterNum >= start && chapterNum <= end;
+            if (parsed.kind === 'range') {
+                return chapterNum >= parsed.start && chapterNum <= parsed.end;
             }
-            if (/^\d+$/.test(filter)) return chapterNum === parseInt(filter, 10);
-            return title.includes(filter);
+            if (parsed.kind === 'single') {
+                return chapterNum === parsed.n;
+            }
+            if (parsed.kind === 'keyword') {
+                return title.includes(parsed.keyword);
+            }
+            return true;
         };
         return chaptersForDisplay.filter((ch, idx) => matches(ch.title, idx));
     }, [chaptersForDisplay, chapterFilter]);
+
+    const chaptersForPostTextAssistant = useMemo(() => {
+        const parsed = parseChapterFilter(chapterFilter);
+        if (parsed.kind !== 'none') return filteredChaptersForDisplay;
+
+        const selectedId = expandedChapterId || initialChapterId;
+        if (!selectedId) return chaptersForDisplay;
+        const selected = chaptersForDisplay.find((c) => c.id === selectedId);
+        return selected ? [selected] : chaptersForDisplay;
+    }, [chapterFilter, filteredChaptersForDisplay, expandedChapterId, initialChapterId, chaptersForDisplay]);
+
+    const exportScopeLabel = useMemo(() => {
+        const parsed = parseChapterFilter(chapterFilter);
+        if (parsed.kind !== 'none') {
+            return `筛选章节：${chapterFilter.trim()}`;
+        }
+        const selectedId = expandedChapterId || initialChapterId;
+        if (!selectedId) return '全部章节';
+        const idx = chaptersForDisplay.findIndex((c) => c.id === selectedId);
+        const chapterNum = idx >= 0 ? idx + 1 : null;
+        const title = chaptersForDisplay.find((c) => c.id === selectedId)?.title;
+        if (title && chapterNum) return `当前章节：第${chapterNum}章 ${title}`;
+        if (title) return `当前章节：${title}`;
+        if (chapterNum) return `当前章节：第${chapterNum}章`;
+        return '当前章节';
+    }, [chapterFilter, expandedChapterId, initialChapterId, chaptersForDisplay]);
 
     const {
       currentPage,
@@ -156,10 +218,19 @@ const PostProductionPage: React.FC = () => {
     const handleExportToReaper = async () => {
         if (!currentProject) return;
     
-        const chaptersToExport = currentProject.chapters;
+        const parsed = parseChapterFilter(chapterFilter);
+        const chaptersToExport =
+            parsed.kind === 'none'
+                ? (() => {
+                      const selectedId = expandedChapterId || initialChapterId;
+                      if (!selectedId) return chaptersForDisplay;
+                      const selected = chaptersForDisplay.find((c) => c.id === selectedId);
+                      return selected ? [selected] : chaptersForDisplay;
+                  })()
+                : filteredChaptersForDisplay;
     
         if (chaptersToExport.length === 0) {
-            alert('项目内没有可导出的章节。');
+            alert('未找到可导出的章节（请检查“章节筛选”或当前展开的章节）。');
             return;
         }
     
@@ -177,6 +248,7 @@ const PostProductionPage: React.FC = () => {
                 characters,
                 soundLibrary,
                 postProductionLufsSettings,
+                { audioFormat: reaperExportAudioFormat, mp3BitrateKbps: 192 },
             );
         } catch (error) {
             console.error("导出到Reaper时出错:", error);
@@ -202,6 +274,17 @@ const PostProductionPage: React.FC = () => {
     // Added a type guard `(m): m is TextMarker & { name: string } => ...` to ensure that `m.name` is a `string` before mapping, satisfying the type requirements for creating a `Set<string>`.
     const existingSceneNames = useMemo(() => Array.from(new Set(textMarkers.filter((m): m is TextMarker & { name: string } => m.type === 'scene' && !!m.name).map(m => m.name))), [textMarkers]);
 
+    const soundGroupUsageCountById = useMemo(() => {
+        const map: Record<string, number> = {};
+        for (const m of textMarkers) {
+            if (m.type !== 'sfxGroup') continue;
+            const gid = (m.groupId || '').trim();
+            if (!gid) continue;
+            map[gid] = (map[gid] || 0) + 1;
+        }
+        return map;
+    }, [textMarkers]);
+
     return (
         <div className="h-full flex flex-col bg-slate-900 text-slate-100">
             <header className="flex items-center justify-between p-3 border-b border-slate-800 flex-shrink-0">
@@ -223,17 +306,31 @@ const PostProductionPage: React.FC = () => {
                     <button onClick={openSceneModal} disabled={!selectedRange} className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 rounded-md disabled:opacity-50">添加场景</button>
                     <button onClick={() => openBgmModal()} disabled={!selectedRange} className="px-3 py-1.5 text-sm bg-purple-600 hover:bg-purple-700 rounded-md disabled:opacity-50">添加 BGM</button>
                     <button onClick={() => openSfxModal()} disabled={!selectedRange} title={!selectedRange ? '请先在文本中点击定位或选择一段文本' : ''} className="px-3 py-1.5 text-sm bg-rose-600 hover:bg-rose-700 rounded-md disabled:opacity-50">添加音效</button>
+                    <button onClick={() => openSoundGroupModal()} disabled={!selectedRange} title={!selectedRange ? '请先在文本中点击定位或选择一段文本' : ''} className="px-3 py-1.5 text-sm bg-cyan-600 hover:bg-cyan-700 rounded-md disabled:opacity-50">插入音效组</button>
                     <button onClick={handleClearFormatting} disabled={!selectedRange} className="flex items-center px-3 py-1.5 text-sm bg-yellow-600 hover:bg-yellow-700 rounded-md disabled:opacity-50">
                         <ClearFormattingIcon className="w-4 h-4 mr-1.5" />
                         清除格式
                     </button>
                     <button onClick={() => setIsSoundAssistantSettingsOpen(true)} className="px-3 py-1.5 text-sm bg-teal-600 hover:bg-teal-700 rounded-md">音效助手设置</button>
+                    <div className="flex items-center space-x-2">
+                        <label htmlFor="reaper-export-audio-format" className="text-sm text-slate-300 whitespace-nowrap">Reaper 素材:</label>
+                        <select
+                            id="reaper-export-audio-format"
+                            value={reaperExportAudioFormat}
+                            onChange={(e) => setReaperExportAudioFormat(e.target.value as 'wav' | 'mp3')}
+                            className="px-2 py-1.5 text-sm bg-slate-700 text-slate-100 rounded-md border border-slate-600 focus:ring-2 focus:ring-sky-500"
+                            title={reaperExportAudioFormat === 'mp3' ? 'MP3 文件更小，但有损压缩；极少数情况下可能出现微小对齐差异' : 'WAV 文件更大，但最利于精准对齐与后期处理'}
+                        >
+                            <option value="mp3">MP3（更小/192kbps）</option>
+                            <option value="wav">WAV（更大/更准）</option>
+                        </select>
+                    </div>
                     <button
                         onClick={handleExportToReaper}
                         disabled={isExportingToReaper}
                         className="flex items-center text-sm text-teal-300 hover:text-teal-100 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-md disabled:opacity-50"
                         aria-label="导出到 Reaper"
-                        title="将整个项目（包含对白、BGM和音效）导出为 Reaper 工程文件"
+                        title={`导出到 Reaper（${exportScopeLabel}）`}
                     >
                         {isExportingToReaper ? <LoadingSpinner /> : <ArrowDownOnSquareIcon className="w-4 h-4 mr-1" />}
                         {isExportingToReaper ? '导出中...' : '导出到 Reaper'}
@@ -274,6 +371,7 @@ const PostProductionPage: React.FC = () => {
                                     currentProject={currentProject}
                                     onPinSound={handlePinSound}
                                     onUpdateLineText={updateLineText}
+                                    onOpenEditMarker={openEditModal}
                                 />
                             }
                             initialLeftWidthPercent={25}
@@ -308,6 +406,15 @@ const PostProductionPage: React.FC = () => {
                     >
                         在此处添加BGM...
                     </button>
+                    <button
+                        onClick={() => {
+                            openSoundGroupModal(contextMenu.range);
+                            setContextMenu(null);
+                        }}
+                        className="block w-full text-left px-3 py-1.5 text-slate-100 hover:bg-sky-600 rounded-md"
+                    >
+                        在此处插入音效组...
+                    </button>
                 </div>
             )}
             
@@ -327,14 +434,27 @@ const PostProductionPage: React.FC = () => {
                 onClose={closeSfxModal}
                 onSave={handleSaveSfx}
             />
+            <SoundGroupModal
+                isOpen={isSoundGroupModalOpen}
+                onClose={closeSoundGroupModal}
+                onInsert={handleInsertSoundGroup}
+                soundLibrary={soundLibrary}
+                soundGroups={soundGroups}
+                onUpsertGroup={handleUpsertSoundGroup}
+                onDeleteGroup={handleDeleteSoundGroup}
+                groupUsageCountById={soundGroupUsageCountById}
+            />
             <EditMarkerModal
-                isOpen={!!editingMarker && editingMarker.type === 'scene'}
-                marker={editingMarker && editingMarker.type === 'scene' ? editingMarker : null}
+                isOpen={!!editingMarker && (editingMarker.type === 'scene' || editingMarker.type === 'sfxGroup')}
+                marker={editingMarker && (editingMarker.type === 'scene' || editingMarker.type === 'sfxGroup') ? editingMarker : null}
                 onClose={closeEditModal}
                 onDelete={handleDeleteMarker}
                 onRename={handleRenameMarker}
                 onUpdateRangeFromSelection={handleUpdateRangeFromSelection}
+                onUpdateAnchorFromSelection={handleUpdateAnchorFromSelection}
                 onUpdateColor={handleUpdateColor}
+                soundGroups={soundGroups}
+                onChangeSfxGroup={handleChangeSfxGroupMarkerGroup}
                 soundLibrary={soundLibrary}
             />
             <SoundAssistantSettingsModal
@@ -344,7 +464,7 @@ const PostProductionPage: React.FC = () => {
             <PostTextAssistantModal
                 isOpen={isPostTextAssistantOpen}
                 onClose={() => setIsPostTextAssistantOpen(false)}
-                chapters={filteredChaptersForDisplay}
+                chapters={chaptersForPostTextAssistant}
                 projectId={currentProject.id}
                 characters={projectCharacters}
             />

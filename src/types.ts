@@ -38,6 +38,7 @@ export interface ScriptLine {
   originalText?: string; // To track if AI annotation changed it
   characterId?: string;
   audioBlobId?: string; // Path to AI-generated audio
+  isNoAudio?: boolean; // @deprecated Use [静音]/[音效] roles instead; kept for legacy data migration.
   isAiAudioLoading: boolean;
   isAiAudioSynced: boolean; // True if current text matches generated/assigned audio
   isTextModifiedManual: boolean; // True if user manually edited text after initial load/AI annotation
@@ -87,6 +88,61 @@ export interface PostProductionTimeline {
   // Other global settings
 }
 
+// --- Sound Group (SFX Group) ---
+
+/**
+ * 一组“短时事件”音效：在某个锚点（文本行 + 字符偏移）一键插入多条音效，导出时按相对偏移展开。
+ */
+export interface SoundGroupClip {
+  /** 优先使用 soundId；如果音效库重扫导致 id 变化，会回退用 soundName 匹配。 */
+  soundId?: number;
+  /** 音效库中保存的相对路径（如 "脚步/Run.mp3"）。 */
+  soundName?: string;
+  /** 相对锚点的偏移（秒），可为负数。 */
+  offsetSeconds: number;
+  /** 可选：额外增益（dB），导出到 Reaper 时会叠加在自动 LUFS 之上。 */
+  gainDb?: number;
+}
+
+export interface SoundGroup {
+  id: string;
+  name: string;
+  /**
+   * - expanded: 在导出/时间轴中展开为多条音效片段（本地组合）
+   * - reaperSubproject: 引用 Reaper 子工程（.rpp），导出时写入 RPP_PROJECT 绝对路径
+   */
+  kind?: 'expanded' | 'reaperSubproject';
+
+  /** expanded 模式：音效条目 */
+  clips?: SoundGroupClip[];
+
+  /** reaperSubproject 模式：子工程文件名（例如：出厨房.rpp） */
+  reaperFileName?: string;
+  /** reaperSubproject 模式：预览 wav（例如：出厨房_preview.wav） */
+  previewWavFileName?: string;
+  /** reaperSubproject 模式：预览 wav 解析得到的时长（秒），用于导出 item 长度 */
+  durationSeconds?: number;
+}
+
+// --- Pronunciation Notes (Pinyin Notes) ---
+
+/**
+ * 用于 CV 录制的“发音/拼音备注”。
+ * - 作用域：默认按“本书(Project)”全局生效（整本书所有章节出现该词都会显示拼音）
+ * - 用途：提示读音，不改动原文内容
+ */
+export interface PronunciationNote {
+  id: string;
+  /** 词/短语（建议 1-6 个字） */
+  term: string;
+  /** 拼音（建议带声调，例如：jìn liàng） */
+  pinyin: string;
+  /** 可选备注，例如：多音字说明 */
+  note?: string;
+  createdAt: number;
+  updatedAt?: number;
+}
+
 export interface Project {
   id: string;
   name: string; // Book name
@@ -103,6 +159,10 @@ export interface Project {
   silenceSettings?: SilenceSettings;
   postProductionTimeline?: PostProductionTimeline;
   textMarkers?: TextMarker[];
+  /** 可选：项目内维护的“音效组”库（短时事件包）。 */
+  soundGroups?: SoundGroup[];
+  /** 可选：本书全局拼音/发音备注（用于 CV 录制时常显提示）。 */
+  pronunciationNotes?: PronunciationNote[];
   // Voice Library: default reference role mapping per Character
   referenceRoleByCharacterId?: Record<string, string>;
 }
@@ -131,6 +191,8 @@ export interface MasterAudio {
 export interface AudioMarkerSet {
     sourceAudioId: string; // Primary Key
     markers: number[]; // Array of timestamps in seconds
+    skipHeadSegments?: number; // Number of leading segments to ignore (e.g. intro without text)
+    trimStart?: number; // Backward-compat: legacy intro offset in seconds
 }
 
 // Voice Library: stored prompt (reference) audio for TTS
@@ -224,6 +286,9 @@ export interface SoundLibraryItem {
 
 export type SoundLibraryHandleMap = Record<string, FileSystemDirectoryHandle>;
 
+export type SoundLibraryRoot = 'music' | 'sfx';
+export type SoundLibraryRootHandleMap = Partial<Record<SoundLibraryRoot, Array<FileSystemDirectoryHandle | null>>>;
+
 export interface AudioClip {
     id: string;
     soundLibraryId: number;
@@ -248,8 +313,10 @@ export interface PostProductionTrack {
 // FIX: Added TextMarker type to resolve import error in PostProductionPage.
 export interface TextMarker {
   id: string;
-  type: 'bgm' | 'sfx' | 'scene';
+  type: 'bgm' | 'sfx' | 'scene' | 'sfxGroup';
   name?: string;
+  /** 仅 type === 'sfxGroup' 使用：引用 Project.soundGroups[].id */
+  groupId?: string;
   startLineId: string;
   startOffset?: number;
   endLineId: string;

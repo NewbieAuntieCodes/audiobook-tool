@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useStore } from '../../../../store/useStore';
 import { db } from '../../../../db';
-import { LineType, ScriptLine, Character, SilencePairing, SoundLibraryItem } from '../../../../types';
+import { LineType, ScriptLine, Character, SilencePairing, SoundLibraryItem, SoundGroup, TextMarker } from '../../../../types';
 import LoadingSpinner from '../../../../components/ui/LoadingSpinner';
 import TrackGroup from './TrackGroup';
 import Track from '../Track';
@@ -10,6 +10,8 @@ import { defaultSilenceSettings } from '../../../../lib/defaultSilenceSettings';
 import Playhead from './Playhead';
 import TimelineHeader from '../TimelineHeader';
 import * as mm from 'music-metadata-browser';
+import { soundLibraryRepository } from '../../../../repositories/soundLibraryRepository';
+import { getNearestFolderNameFromSoundName, getSoundFileNameFromSoundName } from '../../../../lib/soundPath';
 
 export interface TimelineClip {
     id: string;
@@ -44,6 +46,20 @@ const getLineType = (line: ScriptLine | undefined, characters: Character[]): Lin
 
 const TRACK_HEADER_WIDTH_PX = 192; // Corresponds to w-48 (12rem)
 
+const SOUND_CATEGORY_DISPLAY_NAMES: Record<string, string> = {
+    music_1: '音乐1',
+    music_2: '音乐2',
+    sfx_1: '音效1',
+    sfx_2: '音效2',
+};
+
+const getSoundTrackNameByFolder = (sound: SoundLibraryItem, fallback: string): string => {
+    const folder = getNearestFolderNameFromSoundName(sound.name);
+    if (folder) return folder;
+    const category = (sound.category || '').trim();
+    return SOUND_CATEGORY_DISPLAY_NAMES[category] || category || fallback;
+};
+
 const Timeline: React.FC = () => {
     const {
       selectedProjectId,
@@ -69,6 +85,7 @@ const Timeline: React.FC = () => {
     const schedulerTimerRef = useRef<number>();
     const animationFrameRef = useRef<number>();
     const playbackStartRef = useRef<{ contextTime: number, timelineTime: number } | null>(null);
+    const calcRunIdRef = useRef(0);
 
     const BASE_PIXELS_PER_SECOND = 100;
     const pixelsPerSecond = BASE_PIXELS_PER_SECOND * timelineZoom;
@@ -77,6 +94,21 @@ const Timeline: React.FC = () => {
     const characterMap = useMemo<Map<string, Character>>(() => new Map(characters.map(c => [c.id, c])), [characters]);
     const soundLibraryMap = useMemo<Map<number, SoundLibraryItem>>(() => new Map(soundLibrary.filter(s => s.id !== undefined).map(s => [s.id!, s])), [soundLibrary]);
     const allClips = useMemo(() => trackGroups.flatMap(g => g.tracks.flatMap(t => t.clips)), [trackGroups]);
+
+    const toggleTimelinePlayPause = useCallback(async () => {
+        if (timelineIsPlaying) {
+            setTimelineIsPlaying(false);
+            return;
+        }
+
+        const ok = await soundLibraryRepository.requestRootReadPermission();
+        if (!ok) {
+            alert('需要授权读取音效库文件夹权限，才能播放包含音效的时间轴。');
+            return;
+        }
+
+        setTimelineIsPlaying(true);
+    }, [timelineIsPlaying, setTimelineIsPlaying]);
 
     useEffect(() => {
         audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -140,14 +172,14 @@ const Timeline: React.FC = () => {
             }
 
             event.preventDefault();
-            setTimelineIsPlaying(!timelineIsPlaying);
+            void toggleTimelinePlayPause();
         };
 
         window.addEventListener('keydown', handleKeyDown);
         return () => {
             window.removeEventListener('keydown', handleKeyDown);
         };
-    }, [hasTimelineFocus, timelineIsPlaying, setTimelineIsPlaying]);
+    }, [hasTimelineFocus, toggleTimelinePlayPause]);
 
 
     useEffect(() => {
@@ -159,6 +191,7 @@ const Timeline: React.FC = () => {
         }
 
         const calculateTimeline = async () => {
+            const runId = ++calcRunIdRef.current;
             setIsLoading(true);
             // FIX: The arguments for `setTimelineCurrentTime` and `setTimelineIsPlaying` were missing.
             setTimelineCurrentTime(0);
@@ -193,6 +226,9 @@ const Timeline: React.FC = () => {
                     return null;
                 })
             )).filter((item): item is NonNullable<typeof item> => item !== null);
+
+            // If a newer calculation started, ignore this run's results to avoid showing clips from a stale chapter selection.
+            if (runId !== calcRunIdRef.current) return;
 
             const lineOrderMap = new Map<string, number>();
             chaptersForTimeline.forEach((ch, chIdx) => {
@@ -232,9 +268,15 @@ const Timeline: React.FC = () => {
             }
 
             // --- Process Pinned Sounds ---
-            const sfxClips: TimelineClip[] = [];
-            const bgmClips: TimelineClip[] = [];
-            const ambienceClips: TimelineClip[] = [];
+            const sfxClipsByTrack = new Map<string, TimelineClip[]>();
+            const bgmClipsByTrack = new Map<string, TimelineClip[]>();
+            const ambienceClipsByTrack = new Map<string, TimelineClip[]>();
+
+            const pushClip = (map: Map<string, TimelineClip[]>, trackName: string, clip: TimelineClip) => {
+                const list = map.get(trackName);
+                if (list) list.push(clip);
+                else map.set(trackName, [clip]);
+            };
 
             for (const clip of dialogueClips) {
                 if (clip.line.pinnedSounds) {
@@ -246,12 +288,15 @@ const Timeline: React.FC = () => {
                         const lineTextLength = clip.line.text.length || 1;
                         const timeOffset = (pin.index / lineTextLength) * clip.duration;
                         const startTime = clip.startTime + timeOffset;
+                        const fileName = getSoundFileNameFromSoundName(soundItem.name) ?? soundItem.name;
+                        const folderName = getNearestFolderNameFromSoundName(soundItem.name);
+                        const displayName = folderName ? `${fileName} / ${folderName}` : fileName;
 
                         const newClip: TimelineClip = {
                             id: `pin_${pin.soundId}_${pin.index}_${clip.id}`,
                             startTime,
                             duration: soundItem.duration,
-                            name: soundItem.name,
+                            name: displayName,
                             soundLibraryItem: soundItem,
                             line: clip.line, // for context
                         };
@@ -260,18 +305,99 @@ const Timeline: React.FC = () => {
                         const isAmbienceCategory = category.includes('ambience');
 
                         if (isAmbienceCategory) {
-                            ambienceClips.push(newClip);
+                            const trackName = getSoundTrackNameByFolder(soundItem, '环境音');
+                            pushClip(ambienceClipsByTrack, trackName, newClip);
                         } else if (isBgm) {
-                            bgmClips.push(newClip);
+                            const trackName = getSoundTrackNameByFolder(soundItem, '音乐');
+                            pushClip(bgmClipsByTrack, trackName, newClip);
                         } else {
-                            sfxClips.push(newClip);
+                            const trackName = getSoundTrackNameByFolder(soundItem, '音效');
+                            pushClip(sfxClipsByTrack, trackName, newClip);
                         }
                     }
                 }
             }
 
+            // --- Process Sound Groups (短时事件包：一键插入多条音效) ---
+            const groupById = new Map<string, SoundGroup>();
+            (currentProject.soundGroups || []).forEach((g) => {
+                if (g && g.id) groupById.set(g.id, g);
+            });
+            const soundByName = new Map<string, SoundLibraryItem>();
+            (soundLibrary || []).forEach((s) => {
+                if (s && typeof s.name === 'string') soundByName.set(s.name, s);
+            });
+            const dialogueClipByLineId = new Map<string, TimelineClip>();
+            dialogueClips.forEach((c) => dialogueClipByLineId.set(c.line.id, c));
+
+            const groupMarkers = (currentProject.textMarkers || []).filter(
+                (m): m is TextMarker => m.type === 'sfxGroup' && !!m.groupId && !!m.startLineId,
+            );
+
+            for (const marker of groupMarkers) {
+                const groupId = (marker.groupId || '').trim();
+                if (!groupId) continue;
+                const group = groupById.get(groupId);
+                if (!group || !group.clips || group.clips.length === 0) continue;
+
+                const anchorClip = dialogueClipByLineId.get(marker.startLineId);
+                if (!anchorClip) continue;
+
+                const textLen = anchorClip.line.text.length || 1;
+                const rel = Math.max(0, Math.min(1, (marker.startOffset ?? 0) / textLen));
+                const anchorTime = anchorClip.startTime + rel * anchorClip.duration;
+
+                const groupLabel = (marker.name || group.name || '音效组').trim() || '音效组';
+
+                for (let idx = 0; idx < group.clips.length; idx++) {
+                    const gc = group.clips[idx];
+                    const soundItem =
+                        (typeof gc.soundId === 'number' ? soundLibraryMap.get(gc.soundId) : undefined) ||
+                        (gc.soundName ? soundByName.get(gc.soundName) : undefined);
+                    if (!soundItem) continue;
+
+                    const startTime = Math.max(
+                        0,
+                        anchorTime + (Number.isFinite(gc.offsetSeconds) ? gc.offsetSeconds : 0),
+                    );
+
+                    const fileName = getSoundFileNameFromSoundName(soundItem.name) ?? soundItem.name;
+                    const folderName = getNearestFolderNameFromSoundName(soundItem.name);
+                    const displayName = folderName ? `${fileName} / ${folderName}` : fileName;
+
+                    const newClip: TimelineClip = {
+                        id: `sg_${marker.id}_${idx}_${soundItem.id ?? soundItem.name}`,
+                        startTime,
+                        duration: soundItem.duration,
+                        name: `${groupLabel} - ${displayName}`,
+                        soundLibraryItem: soundItem,
+                        line: anchorClip.line, // for context
+                    };
+
+                    const category = (soundItem.category || '').toLowerCase();
+                    const isAmbienceCategory = category.includes('ambience');
+                    const isMusicCategory = category.startsWith('music');
+
+                    if (isAmbienceCategory) {
+                        const trackName = getSoundTrackNameByFolder(soundItem, '环境音');
+                        pushClip(ambienceClipsByTrack, trackName, newClip);
+                    } else if (isMusicCategory) {
+                        const trackName = getSoundTrackNameByFolder(soundItem, '音乐');
+                        pushClip(bgmClipsByTrack, trackName, newClip);
+                    } else {
+                        const trackName = getSoundTrackNameByFolder(soundItem, '音效');
+                        pushClip(sfxClipsByTrack, trackName, newClip);
+                    }
+                }
+            }
+
             let finalDuration = currentTime;
-            [...sfxClips, ...bgmClips, ...ambienceClips].forEach(clip => {
+            const allPinnedClips = [
+                ...Array.from(sfxClipsByTrack.values()).flat(),
+                ...Array.from(bgmClipsByTrack.values()).flat(),
+                ...Array.from(ambienceClipsByTrack.values()).flat(),
+            ];
+            allPinnedClips.forEach((clip) => {
                 finalDuration = Math.max(finalDuration, clip.startTime + clip.duration);
             });
 
@@ -308,30 +434,48 @@ const Timeline: React.FC = () => {
                 });
             }
 
-            if (bgmClips.length > 0) {
+            const sortTrackNames = (a: string, b: string) =>
+                a.localeCompare(b, 'zh-CN', { numeric: true, sensitivity: 'base' });
+
+            const bgmTrackData: TrackData[] = Array.from(bgmClipsByTrack.entries())
+                .filter(([, clips]) => clips.length > 0)
+                .sort(([a], [b]) => sortTrackNames(a, b))
+                .map(([name, clips]) => ({ name, type: 'music' as const, clips }));
+
+            if (bgmTrackData.length > 0) {
                 newTrackGroups.push({
                     name: '音乐 (Music)',
                     isExpanded: true,
-                    // FIX: The type checker was inferring the `type` property as a generic `string` instead of a specific literal type. Added `as const` to ensure TypeScript correctly infers the type, resolving the assignment error.
-                    tracks: [{ name: '音乐 1', type: 'music' as const, clips: bgmClips }]
+                    tracks: bgmTrackData,
                 });
             }
-            if (sfxClips.length > 0) {
+
+            const sfxTrackData: TrackData[] = Array.from(sfxClipsByTrack.entries())
+                .filter(([, clips]) => clips.length > 0)
+                .sort(([a], [b]) => sortTrackNames(a, b))
+                .map(([name, clips]) => ({ name, type: 'sfx' as const, clips }));
+
+            if (sfxTrackData.length > 0) {
                 newTrackGroups.push({
                     name: '音效 (SFX)',
                     isExpanded: true,
-                    tracks: [{ name: '音效 1', type: 'sfx' as const, clips: sfxClips }]
+                    tracks: sfxTrackData,
                 });
             }
             
             scheduledClipsRef.current.clear();
 
             const finalTrackGroups: TrackGroupData[] = [...newTrackGroups];
-            if (ambienceClips.length > 0) {
+            const ambienceTrackData: TrackData[] = Array.from(ambienceClipsByTrack.entries())
+                .filter(([, clips]) => clips.length > 0)
+                .sort(([a], [b]) => sortTrackNames(a, b))
+                .map(([name, clips]) => ({ name, type: 'ambience' as const, clips }));
+
+            if (ambienceTrackData.length > 0) {
                 const ambienceGroup: TrackGroupData = {
                     name: '\u73af\u5883\u97f3 (Ambience)',
                     isExpanded: true,
-                    tracks: [{ name: '\u73af\u5883\u97f3 1', type: 'ambience', clips: ambienceClips }],
+                    tracks: ambienceTrackData,
                 };
                 const sfxIndex = finalTrackGroups.findIndex(g => g.name.includes('(SFX)'));
                 if (sfxIndex >= 0) {
@@ -350,6 +494,7 @@ const Timeline: React.FC = () => {
             };
             finalTrackGroups.sort((a, b) => getGroupOrder(a.name) - getGroupOrder(b.name));
 
+            if (runId !== calcRunIdRef.current) return;
             setTrackGroups(finalTrackGroups);
             setTotalDuration(finalDuration);
             setIsLoading(false);
@@ -414,8 +559,8 @@ const Timeline: React.FC = () => {
                                 if (clip.audioBlobId) {
                                     const audioBlobData = await db.audioBlobs.get(clip.audioBlobId);
                                     if (audioBlobData) audioBlob = audioBlobData.data;
-                                } else if (clip.soundLibraryItem?.handle) {
-                                    audioBlob = await clip.soundLibraryItem.handle.getFile();
+                                } else if (clip.soundLibraryItem) {
+                                    audioBlob = await soundLibraryRepository.getSoundFile(clip.soundLibraryItem, { requestPermission: false, allowRootResolve: true });
                                 }
                                 
                                 if (!audioBlob) return;
@@ -524,7 +669,7 @@ const Timeline: React.FC = () => {
                             <TrackGroup key={group.name} name={group.name} defaultExpanded={group.isExpanded}>
                                 {group.tracks.map(track => (
                                     <Track
-                                        key={track.name}
+                                        key={`${group.name}-${track.name}`}
                                         name={track.name}
                                         clips={track.clips}
                                         pixelsPerSecond={pixelsPerSecond}

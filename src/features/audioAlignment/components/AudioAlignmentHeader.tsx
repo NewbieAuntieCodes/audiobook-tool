@@ -1,14 +1,12 @@
 import React, { useRef } from 'react';
 import {
   ChevronLeftIcon,
-  UploadIcon,
   UserCircleIcon,
   ListBulletIcon,
   ArrowDownTrayIcon,
   SpeakerXMarkIcon,
   CogIcon,
   MicrophoneIcon,
-  SparklesIcon,
   CheckCircleIcon,
   XMarkIcon,
   ArrowDownOnSquareIcon,
@@ -23,6 +21,8 @@ import Switch from '../../../components/ui/Switch';
 interface AudioAlignmentHeaderProps {
   currentProjectName: string;
   webSocketStatus: WebSocketStatus;
+  pronunciationNoteCount: number;
+  onOpenPronunciationNotes: () => void;
   isRecordingMode: boolean;
   onToggleRecordingMode: () => void;
   cvFilter: string;
@@ -39,6 +39,8 @@ interface AudioAlignmentHeaderProps {
   onOpenExportModal: () => void;
   isExporting: boolean;
   isExportingToReaper: boolean;
+  reaperExportAudioFormat: 'wav' | 'mp3';
+  onReaperExportAudioFormatChange: (format: 'wav' | 'mp3') => void;
   onExportToReaper: () => void;
   onClearAudio: () => void;
   hasAudioInSelection: boolean;
@@ -48,9 +50,6 @@ interface AudioAlignmentHeaderProps {
   onFileSelectionForChapterMatch: (e: React.ChangeEvent<HTMLInputElement>) => void;
   isReturnMatchLoading: boolean;
   onFileSelectionForReturnMatch: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  isAsrAlignSupported: boolean;
-  isAsrAlignLoading: boolean;
-  onFileSelectionForAsrAlign: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onReconnect: () => void;
 }
 
@@ -81,6 +80,8 @@ const StatusIndicator: React.FC<{ status: WebSocketStatus; onReconnect: () => vo
 const AudioAlignmentHeader: React.FC<AudioAlignmentHeaderProps> = ({
   currentProjectName,
   webSocketStatus,
+  pronunciationNoteCount,
+  onOpenPronunciationNotes,
   isRecordingMode,
   onToggleRecordingMode,
   cvFilter,
@@ -97,6 +98,8 @@ const AudioAlignmentHeader: React.FC<AudioAlignmentHeaderProps> = ({
   onOpenExportModal,
   isExporting,
   isExportingToReaper,
+  reaperExportAudioFormat,
+  onReaperExportAudioFormatChange,
   onExportToReaper,
   onClearAudio,
   hasAudioInSelection,
@@ -106,20 +109,15 @@ const AudioAlignmentHeader: React.FC<AudioAlignmentHeaderProps> = ({
   onFileSelectionForChapterMatch,
   isReturnMatchLoading,
   onFileSelectionForReturnMatch,
-  isAsrAlignSupported,
-  isAsrAlignLoading,
-  onFileSelectionForAsrAlign,
   onReconnect,
 }) => {
     const chapterMatchFileInputRef = useRef<HTMLInputElement>(null);
     const smartMatchFileInputRef = useRef<HTMLInputElement>(null);
     const returnMatchFileInputRef = useRef<HTMLInputElement>(null);
-    const asrAlignFileInputRef = useRef<HTMLInputElement>(null);
 
     const handleChapterMatchClick = () => chapterMatchFileInputRef.current?.click();
     const handleSmartMatchClick = () => smartMatchFileInputRef.current?.click();
     const handleReturnMatchClick = () => returnMatchFileInputRef.current?.click();
-    const handleAsrAlignClick = () => asrAlignFileInputRef.current?.click();
 
   return (
     <header className="flex items-center justify-between p-4 border-b border-slate-800 flex-shrink-0 flex-wrap gap-2">
@@ -151,14 +149,6 @@ const AudioAlignmentHeader: React.FC<AudioAlignmentHeaderProps> = ({
               accept="audio/*"
               ref={returnMatchFileInputRef}
               onChange={onFileSelectionForReturnMatch}
-              className="hidden"
-          />
-          <input
-              type="file"
-              multiple
-              accept="audio/*,.docx,.txt"
-              ref={asrAlignFileInputRef}
-              onChange={onFileSelectionForAsrAlign}
               className="hidden"
           />
           <button
@@ -213,6 +203,16 @@ const AudioAlignmentHeader: React.FC<AudioAlignmentHeaderProps> = ({
               <CogIcon className="w-4 h-4 mr-1" />
               间隔配置
           </button>
+          <button
+              onClick={onOpenPronunciationNotes}
+              className="flex items-center text-sm text-sky-300 hover:text-sky-100 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-md"
+              aria-label="拼音备注"
+              title={`本书拼音备注（常显）：${pronunciationNoteCount} 条`}
+          >
+              <MicrophoneIcon className="w-4 h-4 mr-1" />
+              拼音备注
+              <span className="ml-2 text-xs text-slate-300">{pronunciationNoteCount}</span>
+          </button>
           <div className="flex items-center gap-x-2 bg-slate-700 rounded-md p-1 h-8" title="LUFS 响度标准化">
             <span className="text-sm text-slate-400 pl-1.5 pr-1 font-sans font-semibold">LUFS</span>
             <NumberInput
@@ -259,20 +259,6 @@ const AudioAlignmentHeader: React.FC<AudioAlignmentHeaderProps> = ({
               {isReturnMatchLoading ? '匹配中...' : '按返音匹配'}
           </button>
           <button
-              onClick={handleAsrAlignClick}
-              disabled={!isAsrAlignSupported || isAsrAlignLoading}
-              className="flex items-center text-sm text-fuchsia-300 hover:text-fuchsia-100 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-md disabled:opacity-50"
-              aria-label="自动对齐（转写文档/Whisper）"
-              title={
-                isAsrAlignSupported
-                  ? '自动对齐：建议一次性选择“音频 + 带时间戳转写文档(.docx/.txt)”（网页也可用）；只选音频则会调用 Whisper（需 Electron 助手）'
-                  : '自动对齐暂不可用'
-              }
-          >
-              {isAsrAlignLoading ? <LoadingSpinner /> : <SparklesIcon className="w-4 h-4 mr-1" />}
-              {isAsrAlignLoading ? '对齐中...' : '自动对齐'}
-          </button>
-          <button
               onClick={onOpenExportModal}
               disabled={isExporting}
               className="flex items-center text-sm text-sky-300 hover:text-sky-100 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-md disabled:opacity-50"
@@ -281,6 +267,16 @@ const AudioAlignmentHeader: React.FC<AudioAlignmentHeaderProps> = ({
               {isExporting ? <LoadingSpinner /> : <ArrowDownTrayIcon className="w-4 h-4 mr-1" />}
               {isExporting ? '导出中...' : '导出音频'}
           </button>
+          <select
+            value={reaperExportAudioFormat}
+            onChange={(e) => onReaperExportAudioFormatChange(e.target.value as 'wav' | 'mp3')}
+            className="h-8 px-2 text-sm bg-slate-700 text-slate-100 rounded-md border border-slate-600 focus:ring-2 focus:ring-sky-500"
+            title={reaperExportAudioFormat === 'mp3' ? 'MP3 文件更小，但有损压缩；极少数情况下可能出现微小对齐差异' : 'WAV 文件更大，但最利于精准对齐与后期处理'}
+            aria-label="Reaper 导出素材格式"
+          >
+            <option value="mp3">MP3 (192kbps)</option>
+            <option value="wav">WAV</option>
+          </select>
           <button
             onClick={onExportToReaper}
             disabled={isExportingToReaper}

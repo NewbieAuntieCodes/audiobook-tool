@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useStore } from '../../../store/useStore';
-import { TextMarker, PinnedSound, IgnoredSoundKeyword, Project, Chapter, ScriptLine, SoundLibraryItem } from '../../../types';
+import { TextMarker, PinnedSound, IgnoredSoundKeyword, Project, Chapter, ScriptLine, SoundLibraryItem, SoundGroup } from '../../../types';
 import { ensureSoundLufs } from '../../../services/lufsService';
 
 // Helper to find lineId and offset from a Range endpoint
@@ -63,10 +63,12 @@ export const usePostProduction = () => {
     const [isSceneModalOpen, setIsSceneModalOpen] = useState(false);
     const [isBgmModalOpen, setIsBgmModalOpen] = useState(false);
     const [isSfxModalOpen, setIsSfxModalOpen] = useState(false);
+    const [isSoundGroupModalOpen, setIsSoundGroupModalOpen] = useState(false);
     const [editingMarker, setEditingMarker] = useState<TextMarker | null>(null);
 
     const currentProject = useMemo(() => projects.find((p) => p.id === selectedProjectId), [projects, selectedProjectId]);
     const textMarkers = useMemo(() => currentProject?.textMarkers || [], [currentProject]);
+    const soundGroups = useMemo(() => currentProject?.soundGroups || [], [currentProject]);
 
     // 暴露全局桥接（供分行操作直接提交完整 Project）
     useEffect(() => {
@@ -648,7 +650,13 @@ export const usePostProduction = () => {
 
     const handleDeleteMarker = useCallback((id: string) => {
         if (!currentProject) return;
-        const next = textMarkers.filter((m) => m.id !== id);
+        const target = textMarkers.find((m) => m.id === id);
+        // 场景标记在 UI 中按“起始行”展示（不区分 offset），历史数据/批量导入可能产生同一起始行的重复 scene。
+        // 为避免“删了还在”的困惑：删除 scene 时同时删除同一起始行的所有 scene 标记。
+        const next =
+            target?.type === 'scene' && target.startLineId
+                ? textMarkers.filter((m) => !(m.type === 'scene' && m.startLineId === target.startLineId))
+                : textMarkers.filter((m) => m.id !== id);
         updateProjectTextMarkers(currentProject.id, next);
 
         // 同步清理 DOM 中对应的 BGM 高亮，避免删除印记后背景色残留
@@ -692,6 +700,42 @@ export const usePostProduction = () => {
         }
     }, [selectedRange, currentProject, textMarkers, updateProjectTextMarkers]);
 
+    const handleUpdateAnchorFromSelection = useCallback((id: string) => {
+        if (!selectedRange || !currentProject) return;
+        const { startContainer, startOffset } = selectedRange;
+        const startResult = findLineIdAndOffset(startContainer, startOffset);
+        if (startResult) {
+            const next = textMarkers.map((m) =>
+                m.id === id
+                    ? {
+                          ...m,
+                          startLineId: startResult.lineId,
+                          startOffset: startResult.offset,
+                          endLineId: startResult.lineId,
+                          endOffset: startResult.offset,
+                      }
+                    : m,
+            );
+            updateProjectTextMarkers(currentProject.id, next);
+        } else {
+            alert('当前选区无法解析，请重新点击/框选');
+        }
+    }, [selectedRange, currentProject, textMarkers, updateProjectTextMarkers]);
+
+    const handleChangeSfxGroupMarkerGroup = useCallback(
+        (markerId: string, groupId: string) => {
+            if (!currentProject) return;
+            const group = soundGroups.find((g) => g.id === groupId);
+            if (!group) return;
+            const next = textMarkers.map((m) =>
+                m.id === markerId ? { ...m, type: 'sfxGroup', groupId, name: group.name } : m,
+            );
+            updateProjectTextMarkers(currentProject.id, next);
+            setEditingMarker((prev) => (prev?.id === markerId ? { ...prev, groupId, name: group.name } : prev));
+        },
+        [currentProject, soundGroups, textMarkers, updateProjectTextMarkers],
+    );
+
     const handleUpdateColor = useCallback((id: string, color?: string) => {
         if (!currentProject) return;
         const next = textMarkers.map((m) => (m.id === id ? { ...m, color } : m));
@@ -699,6 +743,61 @@ export const usePostProduction = () => {
         (window as any).__applyMarkerColor?.(id, color);
         setEditingMarker((prev) => (prev ? ({ ...prev, color } as TextMarker) : prev));
     }, [currentProject, textMarkers, updateProjectTextMarkers]);
+
+    const handleInsertSoundGroup = useCallback(
+        (groupId: string, groupName?: string) => {
+            if (!selectedRange || !currentProject) return;
+            const startResult = findLineIdAndOffset(selectedRange.startContainer, selectedRange.startOffset);
+            if (!startResult) {
+                alert('无法确定插入位置，请重新在文本中点击定位或选择一段文本');
+                return;
+            }
+            const group = soundGroups.find((g) => g.id === groupId);
+            const displayName = (group?.name || groupName || '音效组').trim() || '音效组';
+
+            const newMarker: TextMarker = {
+                id: `sfxGroup_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                type: 'sfxGroup',
+                name: displayName,
+                groupId: groupId,
+                startLineId: startResult.lineId,
+                startOffset: startResult.offset,
+                endLineId: startResult.lineId,
+                endOffset: startResult.offset,
+            };
+            updateProjectTextMarkers(currentProject.id, [...textMarkers, newMarker]);
+            setIsSoundGroupModalOpen(false);
+            clearSelection();
+        },
+        [selectedRange, currentProject, soundGroups, textMarkers, updateProjectTextMarkers, clearSelection],
+    );
+
+    const handleUpsertSoundGroup = useCallback(
+        (group: SoundGroup) => {
+            if (!currentProject) return;
+            const nextGroups = [...(soundGroups || []).filter((g) => g.id !== group.id), group];
+            // 同步更新已插入的 marker 的显示名称，避免组改名后正文还显示旧名
+            const nextMarkers = (currentProject.textMarkers || []).map((m) =>
+                m.type === 'sfxGroup' && m.groupId === group.id ? { ...m, name: group.name } : m,
+            );
+            updateProject({ ...currentProject, soundGroups: nextGroups, textMarkers: nextMarkers });
+        },
+        [currentProject, soundGroups, updateProject],
+    );
+
+    const handleDeleteSoundGroup = useCallback(
+        (groupId: string) => {
+            if (!currentProject) return;
+            const nextGroups = (soundGroups || []).filter((g) => g.id !== groupId);
+            // 删除组时同时清理引用该组的插入点，避免“残留但导出无效”的困惑
+            const nextMarkers = (currentProject.textMarkers || []).filter(
+                (m) => !(m.type === 'sfxGroup' && m.groupId === groupId),
+            );
+            updateProject({ ...currentProject, soundGroups: nextGroups, textMarkers: nextMarkers });
+            setEditingMarker((prev) => (prev?.type === 'sfxGroup' && prev.groupId === groupId ? null : prev));
+        },
+        [currentProject, soundGroups, updateProject],
+    );
     
     const handlePinSound = useCallback((lineId: string, chapterId: string, charIndex: number, keyword: string, soundId: number | null, soundName: string | null) => {
         if (!currentProject) return;
@@ -747,12 +846,14 @@ export const usePostProduction = () => {
     return {
         currentProject,
         textMarkers,
+        soundGroups,
         selectedRange,
         isSceneModalOpen,
         isBgmModalOpen,
         isSfxModalOpen,
+        isSoundGroupModalOpen,
         editingMarker,
-        suspendLayout: isSceneModalOpen || isBgmModalOpen || !!editingMarker,
+        suspendLayout: isSceneModalOpen || isBgmModalOpen || isSoundGroupModalOpen || !!editingMarker,
         handleTextSelect,
         openSceneModal: () => { if(selectedRange) setIsSceneModalOpen(true); },
         closeSceneModal: () => setIsSceneModalOpen(false),
@@ -776,11 +877,21 @@ export const usePostProduction = () => {
             }
         },
         closeSfxModal: () => setIsSfxModalOpen(false),
+        openSoundGroupModal: (range?: Range) => {
+            const finalRange = range || selectedRange;
+            if (finalRange) {
+              if (range) {
+                setSelectedRange(range);
+              }
+              setIsSoundGroupModalOpen(true);
+            }
+        },
+        closeSoundGroupModal: () => setIsSoundGroupModalOpen(false),
         // ���ޣ�ֻ�� scene ����ǣ�BGM ��ʹ�ÿ���޸Ļ��򷳳�Χ��ͨ��ֱ���༭ <...> �� //
         // ��ɫ��� BGM ��Ǿ��� recalculateBgmMarkersFromText �� useMarkerRendering ��ͨ���ı�
         // �Զ������
         openEditModal: (marker: TextMarker | null) => {
-            if (marker && marker.type !== 'scene') {
+            if (marker && marker.type !== 'scene' && marker.type !== 'sfxGroup') {
                 return;
             }
             setEditingMarker(marker);
@@ -789,9 +900,14 @@ export const usePostProduction = () => {
         handleSaveScene,
         handleSaveBgm: handleSaveBgmWithEndMarker,
         handleSaveSfx,
+        handleInsertSoundGroup,
+        handleUpsertSoundGroup,
+        handleDeleteSoundGroup,
         handleDeleteMarker,
         handleRenameMarker,
         handleUpdateRangeFromSelection,
+        handleUpdateAnchorFromSelection,
+        handleChangeSfxGroupMarkerGroup,
         handleUpdateColor,
         handlePinSound,
         handleClearFormatting,

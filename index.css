@@ -105,7 +105,27 @@
       font-weight: bold;
       white-space: nowrap; /* Prevent scene name from wrapping */
     }
-    
+
+    /* SFX Group Divider Style */
+    .sfx-group-divider {
+      display: flex;
+      align-items: center;
+      color: #fbbf24; /* amber-400 */
+    }
+
+    .sfx-group-divider::before,
+    .sfx-group-divider::after {
+      content: '';
+      flex-grow: 1;
+      border-bottom: 2px dashed #fbbf24; /* amber-400 */
+    }
+
+    .sfx-group-divider-text {
+      padding: 0 1em;
+      font-weight: bold;
+      white-space: nowrap;
+    }
+     
     /* Music range highlight style (soft bright yellow + black text) */
     .music-range-highlight {
       background-color: #FFF9C4; /* light soft yellow */
@@ -122,4 +142,18 @@
     .bg-indigo-800.text-indigo-200 {
       background-color: #D97706 !important; /* amber-600 */
       color: #FEF3C7 !important;           /* amber-100 */
+    }
+
+    /* Pronunciation ruby (always-on pinyin notes) */
+    .pronunciation-ruby {
+      ruby-position: over;
+      ruby-align: center;
+    }
+
+    .pronunciation-ruby rt {
+      font-size: 0.65em;
+      line-height: 1;
+      color: currentColor;
+      opacity: 0.85;
+      font-weight: 500;
     }

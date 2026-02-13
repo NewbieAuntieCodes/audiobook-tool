@@ -79,6 +79,22 @@ export class MiscRepository {
       await this.setRaw('soundObservationList', list);
   }
 
+  /**
+   * 获取音效关键词（按分类）
+   * key 通常为音效库分类（例如 footsteps / doors_windows 等），也可包含通用分类（如 "__global__"）。
+   */
+  async getSoundObservationByCategory(): Promise<Record<string, string[]>> {
+      const map = await this.getRaw<Record<string, string[]>>('soundObservationByCategory');
+      return map || {};
+  }
+
+  /**
+   * 保存音效关键词（按分类）
+   */
+  async saveSoundObservationByCategory(map: Record<string, string[]>): Promise<void> {
+      await this.setRaw('soundObservationByCategory', map);
+  }
+
   // ==================== 合并历史 ====================
 
   /**
@@ -282,6 +298,7 @@ export class MiscRepository {
     selectedAiProvider: string;
     characterShortcuts: CharacterShortcuts;
     soundObservationList: string[];
+    soundObservationByCategory: Record<string, string[]>;
   }> {
     try {
       const [
@@ -292,6 +309,7 @@ export class MiscRepository {
         selectedAiProvider,
         characterShortcuts,
         soundObservationList,
+        soundObservationByCategory,
       ] = await Promise.all([
         this.getMergeHistory(),
         this.getCvColorPresets(),
@@ -300,6 +318,7 @@ export class MiscRepository {
         this.getSelectedAiProvider(),
         this.getCharacterShortcuts(),
         this.getSoundObservationList(),
+        this.getSoundObservationByCategory(),
       ]);
 
       return {
@@ -310,6 +329,7 @@ export class MiscRepository {
         selectedAiProvider,
         characterShortcuts,
         soundObservationList,
+        soundObservationByCategory,
       };
     } catch (error) {
       console.error('❌ [MiscRepository] 批量获取配置失败:', error);

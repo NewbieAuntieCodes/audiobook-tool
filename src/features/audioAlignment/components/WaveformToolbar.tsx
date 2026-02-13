@@ -9,6 +9,7 @@ import {
   PauseIcon,
   PlusIcon,
 } from '../../../components/ui/icons';
+import NumberInput from '../../../components/ui/NumberInput';
 
 interface WaveformToolbarProps {
   isLoading: boolean;
@@ -16,6 +17,10 @@ interface WaveformToolbarProps {
   canUndo: boolean;
   canRedo: boolean;
   selectedMarkerIndex: number | null;
+  skipHeadSegments: number;
+  onSkipHeadSegmentsChange: (value: number) => void;
+  onResetSkipHeadSegments: () => void;
+  onSetSkipHeadFromSelectedMarker: () => void;
   onPlayPause: () => void;
   onAddMarker: () => void;
   onRemoveMarker: () => void;
@@ -32,6 +37,10 @@ export const WaveformToolbar: React.FC<WaveformToolbarProps> = ({
   canUndo,
   canRedo,
   selectedMarkerIndex,
+  skipHeadSegments,
+  onSkipHeadSegmentsChange,
+  onResetSkipHeadSegments,
+  onSetSkipHeadFromSelectedMarker,
   onPlayPause,
   onAddMarker,
   onRemoveMarker,
@@ -42,12 +51,39 @@ export const WaveformToolbar: React.FC<WaveformToolbarProps> = ({
   sourceAudioFilename,
 }) => {
   return (
-    <div className="flex justify-between items-center mb-3 pb-3 border-b border-slate-700 flex-shrink-0">
-      <div>
+    <div className="flex flex-wrap justify-between items-center gap-x-4 gap-y-2 mb-3 pb-3 border-b border-slate-700 flex-shrink-0">
+      <div className="min-w-0">
         <h2 className="text-2xl font-semibold text-slate-100">波形标记编辑器</h2>
         <p className="text-sm text-slate-400 truncate">{sourceAudioFilename}</p>
       </div>
-      <div className="flex items-center gap-x-3">
+      <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
+        <div className="flex items-center gap-x-2">
+          <span className="text-xs text-slate-400 whitespace-nowrap">跳过片头段数</span>
+          <NumberInput
+            value={skipHeadSegments}
+            onChange={onSkipHeadSegmentsChange}
+            step={1}
+            min={0}
+            max={99999}
+            precision={0}
+          />
+          <button
+            onClick={onSetSkipHeadFromSelectedMarker}
+            disabled={isLoading || selectedMarkerIndex === null}
+            className="px-2 py-1 text-xs rounded bg-slate-700 hover:bg-slate-600 text-slate-200 disabled:opacity-50"
+            title="将选中的标记作为“正文开始”（正文第一句从该标记和下一个标记之间开始）"
+          >
+            用选中标记
+          </button>
+          <button
+            onClick={onResetSkipHeadSegments}
+            disabled={isLoading || skipHeadSegments === 0}
+            className="px-2 py-1 text-xs rounded bg-slate-700 hover:bg-slate-600 text-slate-200 disabled:opacity-50"
+            title="重置跳过片头段数为 0"
+          >
+            重置
+          </button>
+        </div>
         <button
           onClick={onPlayPause}
           disabled={isLoading}

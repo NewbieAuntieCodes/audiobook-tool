@@ -1,6 +1,7 @@
 import React from 'react';
-import { PlayIcon, PauseIcon } from '../../../components/ui/icons';
+import { PlayIcon, PauseIcon, TrashIcon } from '../../../components/ui/icons';
 import { useStore } from '../../../store/useStore';
+import { soundLibraryRepository } from '../../../repositories/soundLibraryRepository';
 
 const StopIcon: React.FC<{ className?: string }> = ({ className = "w-5 h-5" }) => (
     <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16" className={className}>
@@ -73,10 +74,55 @@ const TimelineHeader: React.FC = () => {
         setTimelineIsPlaying, 
         timelineCurrentTime,
         stopTimeline,
+        selectedProjectId,
+        selectedChapterId,
+        projects,
+        updateProject,
     } = useStore();
 
-    const handlePlayPause = () => {
-        setTimelineIsPlaying(!timelineIsPlaying);
+    const handlePlayPause = async () => {
+        if (timelineIsPlaying) {
+            setTimelineIsPlaying(false);
+            return;
+        }
+
+        const ok = await soundLibraryRepository.requestRootReadPermission();
+        if (!ok) {
+            alert('需要授权读取音效库文件夹权限，才能播放包含音效的时间轴。');
+            return;
+        }
+
+        setTimelineIsPlaying(true);
+    };
+
+    const handleClearPinnedSoundsForCurrentChapter = async () => {
+        const projectId = selectedProjectId;
+        const chapterId = selectedChapterId;
+        if (!projectId) {
+            alert('请先选择项目。');
+            return;
+        }
+        if (!chapterId) {
+            alert('请先展开/选择一个章节，再清空该章节的音效/BGM。');
+            return;
+        }
+        const project = projects.find((p) => p.id === projectId);
+        if (!project) return;
+
+        const ok = window.confirm('确认清空当前章节的所有已钉住音效/BGM？此操作会移除该章节所有行的钉住数据。');
+        if (!ok) return;
+
+        stopTimeline();
+        await updateProject({
+            ...project,
+            chapters: project.chapters.map((ch) => {
+                if (ch.id !== chapterId) return ch;
+                return {
+                    ...ch,
+                    scriptLines: ch.scriptLines.map((line) => ({ ...line, pinnedSounds: undefined })),
+                };
+            }),
+        });
     };
 
     return (
@@ -93,7 +139,17 @@ const TimelineHeader: React.FC = () => {
                     {formatTime(timelineCurrentTime)}
                 </div>
             </div>
-            <TimelineZoomControl />
+            <div className="flex items-center gap-x-3">
+                <button
+                    onClick={() => void handleClearPinnedSoundsForCurrentChapter()}
+                    className="flex items-center text-xs px-2 py-1 text-slate-300 hover:text-white bg-slate-700 hover:bg-slate-600 rounded"
+                    title="清空当前章节已钉住的音效/BGM"
+                >
+                    <TrashIcon className="w-4 h-4 mr-1" />
+                    清空本章音效/BGM
+                </button>
+                <TimelineZoomControl />
+            </div>
         </div>
     );
 };

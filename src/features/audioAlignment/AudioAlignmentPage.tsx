@@ -5,9 +5,8 @@ import GlobalAudioPlayer from './components/GlobalAudioPlayer';
 import ExportAudioModal from './components/ExportAudioModal';
 import { exportAudioWithMarkers } from '../../lib/wavExporter';
 import { db } from '../../db';
-import { ScriptLine, Chapter, Character } from '../../types';
+import { ScriptLine, Chapter, Character, PronunciationNote } from '../../types';
 import { useAudioFileMatcher } from './hooks/useAudioFileMatcher';
-import { useAsrAutoAligner } from './hooks/useAsrAutoAligner';
 import ResizablePanels from '../../components/ui/ResizablePanels';
 import { usePaginatedChapters } from '../scriptEditor/hooks/usePaginatedChapters';
 import SilenceSettingsModal from './components/SilenceSettingsModal';
@@ -17,6 +16,7 @@ import AudioAlignmentHeader from './components/AudioAlignmentHeader';
 import ChapterListPanel from './components/ChapterListPanel';
 import ScriptLineList from './components/ScriptLineList';
 import { exportToReaperProject } from '../../services/reaperExporter';
+import PronunciationNotesModal from './components/PronunciationNotesModal';
 
 const AudioAlignmentPage: React.FC = () => {
   const store = useStore(state => ({
@@ -48,6 +48,7 @@ const AudioAlignmentPage: React.FC = () => {
     setLufsSettings: state.setLufsSettings,
     isRecordingMode: state.isRecordingMode,
     setRecordingMode: state.setRecordingMode,
+    updateProject: state.updateProject,
   }));
 
   const {
@@ -57,7 +58,8 @@ const AudioAlignmentPage: React.FC = () => {
     closeWaveformEditor, cvFilter, setCvFilter, characterFilter, setCharacterFilter,
     activeRecordingLineId, setActiveRecordingLineId, webSocketStatus, webSocketConnect,
     multiSelectedChapterIds, setMultiSelectedChapterIds, lufsSettings, setLufsSettings,
-    isRecordingMode, setRecordingMode
+    isRecordingMode, setRecordingMode,
+    updateProject,
   } = store;
 
   const lineRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -65,7 +67,9 @@ const AudioAlignmentPage: React.FC = () => {
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [isExportingToReaper, setIsExportingToReaper] = useState(false);
+  const [reaperExportAudioFormat, setReaperExportAudioFormat] = useState<'wav' | 'mp3'>('mp3');
   const [isSilenceSettingsModalOpen, setIsSilenceSettingsModalOpen] = useState(false);
+  const [isPronunciationNotesModalOpen, setIsPronunciationNotesModalOpen] = useState(false);
   const [lastSelectedChapterForShiftClick, setLastSelectedChapterForShiftClick] = useState<string | null>(null);
   const currentProject = projects.find(p => p.id === selectedProjectId);
 
@@ -92,17 +96,6 @@ const AudioAlignmentPage: React.FC = () => {
     multiSelectedChapterIds,
   });
 
-  const {
-    isAsrSupported,
-    isAsrAlignLoading,
-    handleFileSelectionForAsrAlign,
-  } = useAsrAutoAligner({
-    currentProject,
-    selectedChapterId,
-    characters,
-    assignAudioToLine,
-  });
-
   const { projectCharacters, projectCvNames } = useMemo<{ projectCharacters: Character[], projectCvNames: string[] }>(() => {
     if (!currentProject) {
         return { projectCharacters: [], projectCvNames: [] };
@@ -120,17 +113,9 @@ const AudioAlignmentPage: React.FC = () => {
   const selectedChapter = currentProject?.chapters.find(c => c.id === selectedChapterId);
   const selectedChapterIndex = currentProject?.chapters.findIndex(c => c.id === selectedChapterId);
 
-  const nonAudioCharacterIds = useMemo(() => {
-    return characters
-      .filter(c => c.name === '[静音]' || c.name === '音效' || c.name === '[音效]')
-      .map(c => c.id);
-  }, [characters]);
-
   const visibleScriptLines = useMemo(() => {
-    if (!selectedChapter) return [];
-    if (nonAudioCharacterIds.length === 0) return selectedChapter.scriptLines;
-    return selectedChapter.scriptLines.filter(line => !nonAudioCharacterIds.includes(line.characterId || ''));
-  }, [selectedChapter, nonAudioCharacterIds]);
+    return selectedChapter?.scriptLines || [];
+  }, [selectedChapter]);
   
   const {
       currentPage,
@@ -173,7 +158,10 @@ const AudioAlignmentPage: React.FC = () => {
     
     setIsExportingToReaper(true);
     try {
-        await exportToReaperProject(currentProject, chaptersToExport, characters);
+        await exportToReaperProject(currentProject, chaptersToExport, characters, {
+          audioFormat: reaperExportAudioFormat,
+          mp3BitrateKbps: 192,
+        });
     } catch (error) {
         console.error("导出到Reaper时出错:", error);
         alert(`导出到Reaper时出错: ${error instanceof Error ? error.message : '未知错误'}`);
@@ -248,6 +236,15 @@ const AudioAlignmentPage: React.FC = () => {
       webSocketConnect();
     }
   }, [webSocketConnect]);
+
+  const pronunciationNotes = useMemo(() => currentProject?.pronunciationNotes || [], [currentProject]);
+  const handleSavePronunciationNotes = useCallback(
+    (nextNotes: PronunciationNote[]) => {
+      if (!currentProject) return;
+      updateProject({ ...currentProject, pronunciationNotes: nextNotes });
+    },
+    [currentProject, updateProject],
+  );
   
   const hasAudioInSelection = useMemo(() => {
       if (!currentProject) return false;
@@ -278,9 +275,9 @@ const AudioAlignmentPage: React.FC = () => {
       );
   };
 
-  const handleCalibrationSave = async (sourceAudioId: string, markers: number[]) => {
+  const handleCalibrationSave = async (sourceAudioId: string, markers: number[], skipHeadSegments: number) => {
     if (currentProject) {
-        await resegmentAndRealignAudio(currentProject.id, sourceAudioId, markers);
+        await resegmentAndRealignAudio(currentProject.id, sourceAudioId, markers, skipHeadSegments);
     }
     closeWaveformEditor();
   };
@@ -336,6 +333,8 @@ const AudioAlignmentPage: React.FC = () => {
         <AudioAlignmentHeader
             currentProjectName={currentProject.name}
             webSocketStatus={webSocketStatus}
+            pronunciationNoteCount={pronunciationNotes.length}
+            onOpenPronunciationNotes={() => setIsPronunciationNotesModalOpen(true)}
             isRecordingMode={isRecordingMode}
             onToggleRecordingMode={() => setRecordingMode(!isRecordingMode)}
             cvFilter={cvFilter}
@@ -352,6 +351,8 @@ const AudioAlignmentPage: React.FC = () => {
             onOpenExportModal={() => setIsExportModalOpen(true)}
             isExporting={isExporting}
             isExportingToReaper={isExportingToReaper}
+            reaperExportAudioFormat={reaperExportAudioFormat}
+            onReaperExportAudioFormatChange={setReaperExportAudioFormat}
             onExportToReaper={handleExportToReaper}
             onClearAudio={handleClearAudio}
             hasAudioInSelection={hasAudioInSelection}
@@ -361,9 +362,6 @@ const AudioAlignmentPage: React.FC = () => {
             onFileSelectionForChapterMatch={handleFileSelectionForChapterMatch}
             isReturnMatchLoading={isReturnMatchLoading}
             onFileSelectionForReturnMatch={handleFileSelectionForReturnMatch}
-            isAsrAlignSupported={isAsrSupported}
-            isAsrAlignLoading={isAsrAlignLoading}
-            onFileSelectionForAsrAlign={handleFileSelectionForAsrAlign}
             onReconnect={handleReconnect}
         />
         <div className="flex flex-grow overflow-hidden">
@@ -384,25 +382,47 @@ const AudioAlignmentPage: React.FC = () => {
                 />
             }
             rightPanel={
-                <main 
-                    className="flex-grow p-4 overflow-y-auto transition-all" 
-                    style={{ paddingBottom: store.playingLineInfo ? '8rem' : '1rem' }}
-                >
-                    <ScriptLineList
-                        selectedChapter={selectedChapter}
-                        selectedChapterIndex={selectedChapterIndex!}
-                        visibleScriptLines={visibleScriptLines}
-                        characters={characters}
-                        isRecordingMode={isRecordingMode}
-                        cvFilter={cvFilter}
-                        characterFilter={characterFilter}
-                        activeRecordingLineId={activeRecordingLineId}
-                        setActiveRecordingLineId={setActiveRecordingLineId}
-                        openWaveformEditor={openWaveformEditor}
-                        lineRefs={lineRefs}
-                        projectId={currentProject.id}
-                    />
-                </main>
+                <div className="flex h-full w-full overflow-hidden">
+                  <div className="flex-grow min-w-0">
+                    <main 
+                        className="h-full p-4 overflow-y-auto transition-all" 
+                        style={{ paddingBottom: store.playingLineInfo ? '8rem' : '1rem' }}
+                    >
+                         <ScriptLineList
+                             selectedChapter={selectedChapter}
+                             selectedChapterIndex={selectedChapterIndex!}
+                             visibleScriptLines={visibleScriptLines}
+                             characters={characters}
+                             isRecordingMode={isRecordingMode}
+                             cvFilter={cvFilter}
+                             characterFilter={characterFilter}
+                             activeRecordingLineId={activeRecordingLineId}
+                             setActiveRecordingLineId={setActiveRecordingLineId}
+                             openWaveformEditor={openWaveformEditor}
+                             lineRefs={lineRefs}
+                             projectId={currentProject.id}
+                             pronunciationNotes={pronunciationNotes}
+                         />
+                     </main>
+                  </div>
+
+                  {waveformEditorState.isOpen && waveformEditorState.sourceAudioInfo && (
+                    <aside
+                      className="w-[520px] max-w-[45%] h-full flex-shrink-0 p-3 bg-slate-900 border-l border-slate-700 overflow-hidden"
+                      style={{ paddingBottom: store.playingLineInfo ? '8rem' : '1rem' }}
+                    >
+                      <AudioWaveformEditor
+                        isOpen={waveformEditorState.isOpen}
+                        layout="dock"
+                        onClose={closeWaveformEditor}
+                        sourceAudioInfo={waveformEditorState.sourceAudioInfo}
+                        currentLineId={waveformEditorState.lineId}
+                        currentLineIndex={waveformEditorState.lineIndex}
+                        onSave={handleCalibrationSave}
+                      />
+                    </aside>
+                  )}
+                </div>
             }
             initialLeftWidthPercent={25}
             />
@@ -425,15 +445,14 @@ const AudioAlignmentPage: React.FC = () => {
               project={currentProject}
           />
        )}
-       {waveformEditorState.isOpen && waveformEditorState.sourceAudioInfo && (
-          <AudioWaveformEditor
-            isOpen={waveformEditorState.isOpen}
-            onClose={closeWaveformEditor}
-            sourceAudioInfo={waveformEditorState.sourceAudioInfo}
-            currentLineId={waveformEditorState.lineId}
-            currentLineIndex={waveformEditorState.lineIndex}
-            onSave={handleCalibrationSave}
-          />
+
+       {currentProject && (
+         <PronunciationNotesModal
+           isOpen={isPronunciationNotesModalOpen}
+           notes={pronunciationNotes}
+           onClose={() => setIsPronunciationNotesModalOpen(false)}
+           onSave={handleSavePronunciationNotes}
+         />
        )}
     </div>
   );

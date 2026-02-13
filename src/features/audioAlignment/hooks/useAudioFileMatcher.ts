@@ -3,10 +3,13 @@ import React from 'react';
 import * as mm from 'music-metadata-browser';
 import { Project, Character, Chapter, ScriptLine, MasterAudio } from '../../../types';
 import { bufferToWav } from '../../../lib/wavEncoder';
+import { normalizeCharacterNameKey } from '../../../lib/characterName';
 // FIX: Import `Buffer` to resolve "Cannot find name 'Buffer'" error.
 import { Buffer } from 'buffer';
 // FIX: Import the 'db' instance to resolve 'Cannot find name 'db''.
 import { db } from '../../../db';
+
+const NON_AUDIO_ROLE_NAME_KEYS = new Set(['[静音]', '静音', '音效', '[音效]', 'sfx'].map(normalizeCharacterNameKey));
 
 interface UseAudioFileMatcherProps {
   currentProject: Project | undefined;
@@ -139,11 +142,9 @@ const parseXmpCuePoints = (metadata: any, audioDuration: number): { startTime: n
         // 排序
         startTimes.sort((a, b) => a - b);
 
-        // 如果第一个标记不是从 0 开始，添加一个起始标记
-        if (startTimes.length > 0 && startTimes[0] > 0) {
-            startTimes.unshift(0);
-            console.log('添加起始标记（时间 0）');
-        }
+        // 注意：不强制补 0 起始标记。
+        // 若音频开头存在“片头/报幕”等无对应文本的内容，建议让第一个标记直接从正文开始，
+        // 这样网页对轨会自动忽略开头那段无文本音频，避免整体偏移。
 
         // 创建时间段：从每个marker到下一个marker（或音频结束）
         const segments: { startTime: number; endTime: number }[] = [];
@@ -190,7 +191,7 @@ export const useAudioFileMatcher = ({
 
   const nonAudioCharacterIds = React.useMemo(() => {
     return characters
-      .filter(c => c.name === '[静音]' || c.name === '音效' || c.name === '[音效]')
+      .filter(c => NON_AUDIO_ROLE_NAME_KEYS.has(normalizeCharacterNameKey(c.name)))
       .map(c => c.id);
   }, [characters]);
 

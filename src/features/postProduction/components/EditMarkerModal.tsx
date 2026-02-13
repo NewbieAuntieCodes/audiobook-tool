@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useState, useRef } from 'react';
-import { TextMarker, SoundLibraryItem } from '../../../types';
+import { TextMarker, SoundLibraryItem, SoundGroup } from '../../../types';
 import { MagnifyingGlassIcon, MusicalNoteIcon, PlayIcon, PauseIcon } from '../../../components/ui/icons';
 import LoadingSpinner from '../../../components/ui/LoadingSpinner';
+import { soundLibraryRepository } from '../../../repositories/soundLibraryRepository';
+import { getNearestFolderNameFromSoundName, getSoundFileNameFromSoundName } from '../../../lib/soundPath';
 
 
 interface EditMarkerModalProps {
@@ -11,8 +13,11 @@ interface EditMarkerModalProps {
   onDelete: (id: string) => void;
   onRename: (id: string, newName: string) => void;
   onUpdateRangeFromSelection: (id: string) => void;
+  onUpdateAnchorFromSelection: (id: string) => void;
   onUpdateColor: (id: string, color?: string) => void;
   soundLibrary: SoundLibraryItem[];
+  soundGroups: SoundGroup[];
+  onChangeSfxGroup: (markerId: string, groupId: string) => void;
 }
 
 const formatDuration = (seconds: number) => {
@@ -23,7 +28,7 @@ const formatDuration = (seconds: number) => {
 };
 
 
-const EditMarkerModal: React.FC<EditMarkerModalProps> = ({ isOpen, marker, onClose, onDelete, onRename, onUpdateRangeFromSelection, onUpdateColor, soundLibrary }) => {
+const EditMarkerModal: React.FC<EditMarkerModalProps> = ({ isOpen, marker, onClose, onDelete, onRename, onUpdateRangeFromSelection, onUpdateAnchorFromSelection, onUpdateColor, soundLibrary, soundGroups, onChangeSfxGroup }) => {
   const [name, setName] = useState('');
   const [useCustomColor, setUseCustomColor] = useState(false);
   const [colorHex, setColorHex] = useState('#fff9cc');
@@ -70,9 +75,10 @@ const EditMarkerModal: React.FC<EditMarkerModalProps> = ({ isOpen, marker, onClo
     }
     setIsSearching(true);
     const handler = setTimeout(() => {
-        const musicAndAmbience = soundLibrary.filter(
-            s => s.category === 'music' || s.category === 'ambience'
-        );
+        const musicAndAmbience = soundLibrary.filter((s) => {
+            const cat = (s.category || '').toLowerCase();
+            return cat.startsWith('music') || cat.startsWith('ambience');
+        });
         const results = musicAndAmbience.filter(sound =>
             sound.name.toLowerCase().includes(searchTerm.toLowerCase())
         );
@@ -132,12 +138,19 @@ const EditMarkerModal: React.FC<EditMarkerModalProps> = ({ isOpen, marker, onClo
     }
     
     try {
-      const file = await sound.handle.getFile();
+      const file = await soundLibraryRepository.getSoundFile(sound, { requestPermission: true, allowRootResolve: true });
       const url = URL.createObjectURL(file);
       setPreviewAudio({ url, id: sound.id });
     } catch (e) {
       console.error("Error getting file for preview:", e);
-      alert("无法预览该文件。");
+      const name = e instanceof Error ? e.name : '';
+      if (name === 'NotAllowedError' || name === 'SecurityError') {
+        alert('需要授权读取文件/文件夹权限，才能预览。');
+      } else if (name === 'NotFoundError') {
+        alert('找不到该文件，可能已被移动/删除。请在音效库里点击“更新”重新扫描。');
+      } else {
+        alert('无法预览该文件。');
+      }
     }
   };
 
@@ -168,6 +181,8 @@ const EditMarkerModal: React.FC<EditMarkerModalProps> = ({ isOpen, marker, onClo
   };
   
   const isBgmType = marker.type === 'bgm';
+  const isSceneType = marker.type === 'scene';
+  const isSfxGroupType = marker.type === 'sfxGroup';
 
   const BGMEditor = (
      <div className="space-y-4">
@@ -192,20 +207,26 @@ const EditMarkerModal: React.FC<EditMarkerModalProps> = ({ isOpen, marker, onClo
                 <div className="flex-grow flex items-center justify-center"><LoadingSpinner/></div>
             ) : searchResults.length > 0 ? (
                 <ul className="space-y-1">
-                    {searchResults.map(sound => (
-                        <li key={sound.id} className="group flex items-center justify-between p-2 rounded-md hover:bg-slate-700 transition-colors">
-                            <div className="flex items-center cursor-pointer flex-grow min-w-0" onClick={() => setName(sound.name)}>
-                                <MusicalNoteIcon className="w-4 h-4 mr-3 text-sky-400 flex-shrink-0" />
-                                <span className="text-sm truncate" title={sound.name}>{sound.name}</span>
-                            </div>
-                            <div className="flex items-center space-x-2 flex-shrink-0 ml-4">
-                                <span className="text-xs text-slate-400 font-mono">{formatDuration(sound.duration)}</span>
-                                <button onClick={() => handlePreview(sound)} className="p-1.5 rounded-full bg-slate-600 group-hover:bg-sky-600 text-white">
-                                    {previewAudio?.id === sound.id ? <PauseIcon className="w-4 h-4" /> : <PlayIcon className="w-4 h-4" />}
-                                </button>
-                            </div>
-                        </li>
-                    ))}
+                    {searchResults.map(sound => {
+                        const fileName = getSoundFileNameFromSoundName(sound.name) ?? sound.name;
+                        const folderName = getNearestFolderNameFromSoundName(sound.name);
+                        const displayName = folderName ? `${fileName} / ${folderName}` : fileName;
+
+                        return (
+                            <li key={sound.id} className="group flex items-center justify-between p-2 rounded-md hover:bg-slate-700 transition-colors">
+                                <div className="flex items-center cursor-pointer flex-grow min-w-0" onClick={() => setName(sound.name)}>
+                                    <MusicalNoteIcon className="w-4 h-4 mr-3 text-sky-400 flex-shrink-0" />
+                                    <span className="text-sm truncate" title={sound.name}>{displayName}</span>
+                                </div>
+                                <div className="flex items-center space-x-2 flex-shrink-0 ml-4">
+                                    <span className="text-xs text-slate-400 font-mono">{formatDuration(sound.duration)}</span>
+                                    <button onClick={() => handlePreview(sound)} className="p-1.5 rounded-full bg-slate-600 group-hover:bg-sky-600 text-white">
+                                        {previewAudio?.id === sound.id ? <PauseIcon className="w-4 h-4" /> : <PlayIcon className="w-4 h-4" />}
+                                    </button>
+                                </div>
+                            </li>
+                        );
+                    })}
                 </ul>
             ) : searchTerm ? (
                 <div className="flex-grow flex items-center justify-center text-sm text-slate-500">在“音乐”或“环境音”中未找到匹配项。</div>
@@ -247,7 +268,7 @@ const EditMarkerModal: React.FC<EditMarkerModalProps> = ({ isOpen, marker, onClo
           </div>
         </div>
      </div>
-  );
+   );
 
   const SceneEditor = (
     <div>
@@ -263,20 +284,55 @@ const EditMarkerModal: React.FC<EditMarkerModalProps> = ({ isOpen, marker, onClo
     </div>
   );
 
+  const SfxGroupEditor = (
+    <div>
+      <label className="block text-sm font-medium text-slate-300 mb-1">音效组</label>
+      <select
+        value={marker.groupId || ''}
+        onChange={(e) => onChangeSfxGroup(marker.id, e.target.value)}
+        className="w-full p-2 bg-slate-700 text-slate-100 rounded-md border border-slate-600 focus:ring-2 focus:ring-sky-500"
+      >
+        <option value="" disabled>
+          {soundGroups.length > 0 ? '请选择…' : '暂无音效组（先创建音效组）'}
+        </option>
+        {soundGroups
+          .slice()
+          .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'zh-Hans-CN'))
+          .map((g) => (
+            <option key={g.id} value={g.id}>
+              {g.name}
+            </option>
+          ))}
+      </select>
+      <div className="mt-2 text-xs text-slate-400">
+        这是“短时事件包”：导出到 Reaper 时会展开为多条音效片段（按相对偏移）。
+      </div>
+    </div>
+  );
+
   return (
     <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-[60] p-4">
       <audio ref={audioRef} />
       <div className="bg-slate-800 p-6 rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col">
-        <h2 className="text-xl font-semibold text-slate-100 mb-4 flex-shrink-0">编辑{marker.type === 'scene' ? '场景' : marker.type === 'bgm' ? '背景音乐' : '标记'}</h2>
+        <h2 className="text-xl font-semibold text-slate-100 mb-4 flex-shrink-0">
+          编辑{marker.type === 'scene' ? '场景' : marker.type === 'sfxGroup' ? '音效组' : marker.type === 'bgm' ? '背景音乐' : '标记'}
+        </h2>
 
         <div className="flex-grow overflow-y-auto pr-2 -mr-2">
-          {isBgmType ? BGMEditor : SceneEditor}
+          {isBgmType ? BGMEditor : isSceneType ? SceneEditor : isSfxGroupType ? SfxGroupEditor : SceneEditor}
         </div>
         
         <div className="border-t border-slate-700 pt-4 mt-4 flex-shrink-0">
-          <div className="text-xs text-slate-400 mb-2">想调范围？先在正文里重新框选，再点击“用当前选区更新范围”。</div>
+          <div className="text-xs text-slate-400 mb-2">
+            {isSfxGroupType ? '想移动插入点？先在正文里重新点击定位/框选，再点击“用当前选区更新插入点”。' : '想调范围？先在正文里重新框选，再点击“用当前选区更新范围”。'}
+          </div>
           <div className="flex gap-2">
-            <button className="px-3 py-1.5 text-sm bg-slate-700 hover:bg-slate-600 rounded text-slate-200" onClick={() => onUpdateRangeFromSelection(marker.id)}>用当前选区更新范围</button>
+            <button
+              className="px-3 py-1.5 text-sm bg-slate-700 hover:bg-slate-600 rounded text-slate-200"
+              onClick={() => (isSfxGroupType ? onUpdateAnchorFromSelection(marker.id) : onUpdateRangeFromSelection(marker.id))}
+            >
+              {isSfxGroupType ? '用当前选区更新插入点' : '用当前选区更新范围'}
+            </button>
             <button className="ml-auto px-3 py-1.5 text-sm bg-red-600 hover:bg-red-700 rounded text-white" onClick={() => onDelete(marker.id)}>删除标记</button>
           </div>
         </div>

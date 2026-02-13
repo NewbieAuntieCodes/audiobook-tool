@@ -10,6 +10,7 @@
     "postinstall": "patch-package"
   },
   "dependencies": {
+    "@breezystack/lamejs": "^1.2.7",
     "@google/genai": "^1.0.0",
     "buffer": "^6.0.3",
     "dexie": "^4.0.7",

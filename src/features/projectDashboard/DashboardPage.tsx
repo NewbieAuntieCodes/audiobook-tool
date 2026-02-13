@@ -6,6 +6,7 @@ import useStore from '../../store/useStore';
 import CollaboratorModal from './components/CollaboratorModal';
 import { isHexColor, getContrastingTextColor } from '../../lib/colorUtils';
 import { tailwindToHex } from '../../lib/tailwindColorMap';
+import { defaultCvPresetColors, defaultCharacterPresetColors } from '../../lib/colorPresets';
 import { internalParseScriptToChapters } from '../../lib/scriptParser';
 import { parseChaptersPatchJson } from '../scriptEditor/services/chaptersPatch';
 import type { ChaptersPatchV1 } from '../scriptEditor/services/chaptersPatch';
@@ -131,7 +132,17 @@ const ColorPresetManagerModal: React.FC<{
     setEditedCharPresets(JSON.parse(JSON.stringify(initialCharPresets)));
   };
 
+  const handleResetToSystemDefaults = () => {
+    setEditedCvPresets(JSON.parse(JSON.stringify(defaultCvPresetColors)));
+    setEditedCharPresets(JSON.parse(JSON.stringify(defaultCharacterPresetColors)));
+  };
+
   if (!isOpen) return null;
+
+  const cvPresetCount = editedCvPresets.length || initialCvPresets.length;
+  const charPresetCount = editedCharPresets.length || initialCharPresets.length;
+  const cvPresetRows = cvPresetCount > 0 ? Math.ceil(cvPresetCount / 8) : 0;
+  const charPresetRows = charPresetCount > 0 ? Math.ceil(charPresetCount / 8) : 0;
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-[100] p-4">
@@ -143,7 +154,7 @@ const ColorPresetManagerModal: React.FC<{
 
         <div className="flex-grow overflow-y-auto pr-2 grid grid-cols-1 gap-8">
           <section>
-            <h3 className="text-lg font-medium text-teal-400 sticky top-0 bg-slate-850 py-2">CV 预设颜色 (2排 × 8个)</h3>
+            <h3 className="text-lg font-medium text-teal-400 sticky top-0 bg-slate-850 py-2">CV 预设颜色 ({cvPresetRows}排，共{cvPresetCount}个)</h3>
             <div className="grid grid-cols-8 gap-3">
               {editedCvPresets.map((preset, index) => (
                 <EditablePresetColor key={`cv-${index}`} preset={preset} onUpdate={(updates) => handleCvUpdate(index, updates)} idPrefix={`cv-${index}`} />
@@ -151,7 +162,7 @@ const ColorPresetManagerModal: React.FC<{
             </div>
           </section>
           <section>
-            <h3 className="text-lg font-medium text-rose-400 sticky top-0 bg-slate-850 py-2">角色 预设颜色 (2排 × 8个)</h3>
+            <h3 className="text-lg font-medium text-rose-400 sticky top-0 bg-slate-850 py-2">角色 预设颜色 ({charPresetRows}排，共{charPresetCount}个)</h3>
             <div className="grid grid-cols-8 gap-3">
               {editedCharPresets.map((preset, index) => (
                 <EditablePresetColor key={`char-${index}`} preset={preset} onUpdate={(updates) => handleCharUpdate(index, updates)} idPrefix={`char-${index}`} />
@@ -164,7 +175,10 @@ const ColorPresetManagerModal: React.FC<{
           <p className="text-xs text-slate-500">提示：颜色选择实时同步，名称在输入框失焦后自动保存。</p>
           <div className="flex space-x-3">
             <button onClick={handleReset} className="flex items-center px-4 py-2 text-sm font-medium text-slate-300 bg-slate-700 hover:bg-slate-600 rounded-md">
-                <ArrowPathIcon className="w-4 h-4 mr-2" /> 重置为默认
+                <ArrowPathIcon className="w-4 h-4 mr-2" /> 撤销本次修改
+            </button>
+            <button onClick={handleResetToSystemDefaults} className="flex items-center px-4 py-2 text-sm font-medium text-white bg-purple-700 hover:bg-purple-600 rounded-md">
+                <ArrowPathIcon className="w-4 h-4 mr-2" /> 恢复系统默认
             </button>
             <button onClick={handleSave} className="flex items-center px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-md">
                 <SaveIcon className="w-4 h-4 mr-2" /> 保存并关闭

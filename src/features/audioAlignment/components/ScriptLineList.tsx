@@ -1,5 +1,5 @@
 import React from 'react';
-import { ScriptLine, Chapter, Character } from '../../../types';
+import { ScriptLine, Chapter, Character, PronunciationNote } from '../../../types';
 import AudioScriptLine from './AudioScriptLine';
 import { BookOpenIcon } from '../../../components/ui/icons';
 
@@ -8,6 +8,7 @@ interface ScriptLineListProps {
   selectedChapterIndex: number;
   visibleScriptLines: ScriptLine[];
   characters: Character[];
+  pronunciationNotes: PronunciationNote[];
   isRecordingMode: boolean;
   cvFilter: string;
   characterFilter: string;
@@ -29,6 +30,7 @@ const ScriptLineList: React.FC<ScriptLineListProps> = ({
   selectedChapterIndex,
   visibleScriptLines,
   characters,
+  pronunciationNotes,
   isRecordingMode,
   cvFilter,
   characterFilter,
@@ -78,6 +80,7 @@ const ScriptLineList: React.FC<ScriptLineListProps> = ({
                     chapterId={selectedChapter.id}
                     projectId={projectId}
                     character={characters.find(c => c.id === line.characterId)}
+                    pronunciationNotes={pronunciationNotes}
                     onRequestCalibration={openWaveformEditor}
                     isDimmed={isDimmed}
                     isRecordingActive={isRecordingMode && line.id === activeRecordingLineId}

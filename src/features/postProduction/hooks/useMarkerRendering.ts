@@ -152,18 +152,44 @@ export const useMarkerRendering = (
             let endAnchorEl: HTMLElement | null = null;
 
             if (startParagraph) {
-                const candidates = Array.from(startParagraph.querySelectorAll('strong.bgm-marker-inline')) as HTMLElement[];
+                const candidates = Array.from(
+                    startParagraph.querySelectorAll('strong.bgm-marker-inline[data-bgm-name]')
+                ) as HTMLElement[];
+                const startOffsetStr = marker.startOffset !== undefined ? String(marker.startOffset) : null;
                 startAnchorEl =
+                    (startOffsetStr ? candidates.find(el => el.dataset.bgmStartOffset === startOffsetStr) : null) ||
                     candidates.find(el => el.dataset.bgmName === (marker.name || '')) ||
                     candidates[0] ||
                     null;
             }
 
             if (endParagraph) {
-                endAnchorEl = endParagraph.querySelector('strong.bgm-marker-inline[data-bgm-end=\"1\"]') as HTMLElement | null;
+                const endCandidates = Array.from(
+                    endParagraph.querySelectorAll('strong.bgm-marker-inline[data-bgm-end="1"]')
+                ) as HTMLElement[];
+                const endOffsetStr = marker.endOffset !== undefined ? String(marker.endOffset) : null;
+
+                endAnchorEl =
+                    (endOffsetStr ? endCandidates.find(el => el.dataset.index === endOffsetStr) : null) ||
+                    // 回退：找到从起点标记之后出现的第一个结束标记（用于同一行多个 // 或缺少 data-index 的历史渲染）
+                    (() => {
+                        if (!startAnchorEl) return null;
+                        const allEnds = Array.from(
+                            contentEl.querySelectorAll('strong.bgm-marker-inline[data-bgm-end="1"]')
+                        ) as HTMLElement[];
+                        for (const el of allEnds) {
+                            if (startAnchorEl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) return el;
+                        }
+                        return null;
+                    })() ||
+                    endCandidates[0] ||
+                    null;
             }
 
-            const canUseDomAnchors = !!startAnchorEl && !!endAnchorEl;
+            const canUseDomAnchors =
+                !!startAnchorEl &&
+                !!endAnchorEl &&
+                !(startAnchorEl.compareDocumentPosition(endAnchorEl) & Node.DOCUMENT_POSITION_PRECEDING);
 
             const findNode = (p: Element, offset: number) => {
               const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);

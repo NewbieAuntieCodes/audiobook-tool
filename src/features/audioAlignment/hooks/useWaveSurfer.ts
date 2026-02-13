@@ -5,6 +5,7 @@ import WaveSurfer from 'wavesurfer.js';
 import TimelinePlugin from 'wavesurfer.js/dist/plugins/timeline.js';
 import { useStore } from '../../../store/useStore';
 import { db } from '../../../db';
+import { bufferToWav } from '../../../lib/wavEncoder';
 
 const WAVE_BG_COLOR = '#334155';
 const WAVE_PROGRESS_COLOR = '#38bdf8';
@@ -95,7 +96,8 @@ interface UseWaveSurferProps {
   isOpen: boolean;
   sourceAudioInfo: { id: string; filename: string };
   currentLineId: string;
-  onSave: (sourceAudioId: string, markers: number[]) => void;
+  contextLines?: number;
+  onSave: (sourceAudioId: string, markers: number[], skipHeadSegments: number) => void;
   refs: {
     waveformRef: React.RefObject<HTMLDivElement>;
     timelineRef: React.RefObject<HTMLDivElement>;
@@ -108,6 +110,7 @@ export const useWaveSurfer = ({
   isOpen,
   sourceAudioInfo,
   currentLineId,
+  contextLines = 2,
   onSave,
   refs,
 }: UseWaveSurferProps) => {
@@ -118,9 +121,18 @@ export const useWaveSurfer = ({
   }));
 
   const wavesurferRef = useRef<WaveSurfer | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const fullAudioBufferRef = useRef<AudioBuffer | null>(null);
+  const fullDurationRef = useRef(0);
+  const markersRef = useRef<number[]>([]);
+  const viewWindowStartRef = useRef(0);
+  const viewWindowEndRef = useRef(0);
+  const skipHeadSegmentsRef = useRef(0);
+  const loadRunIdRef = useRef(0);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isPanning, setIsPanning] = useState(false);
+  const [skipHeadSegments, setSkipHeadSegments] = useState(0);
 
   // State slices
   const [wavesurferState, setWavesurferState] = useState({
@@ -143,14 +155,29 @@ export const useWaveSurfer = ({
     selectedMarkerIndex: number | null;
     isDraggingMarker: boolean;
     localLineIndex: number;
+    segmentIndex: number;
     mousePosition: { x: number; time: number } | null;
   }>({
     markers: [],
     selectedMarkerIndex: null,
     isDraggingMarker: false,
     localLineIndex: -1,
+    segmentIndex: -1,
     mousePosition: null,
   });
+
+  const visibleMarkers = markerState.markers
+    .map((time, index) => ({ index, time }))
+    .filter(({ time }) => time >= viewWindowStartRef.current && time <= viewWindowEndRef.current)
+    .map(({ index, time }) => ({ index, time: time - viewWindowStartRef.current }));
+
+  useEffect(() => {
+    markersRef.current = markerState.markers;
+  }, [markerState.markers]);
+
+  useEffect(() => {
+    skipHeadSegmentsRef.current = skipHeadSegments;
+  }, [skipHeadSegments]);
 
   const pushToHistory = useCallback((newState: number[]) => {
     setHistoryState(prev => {
@@ -167,20 +194,83 @@ export const useWaveSurfer = ({
     setMarkerState(prev => ({ ...prev, markers: newState }));
   }, []);
 
-  // Calculate local line index
-  useEffect(() => {
-    if (!currentLineId || !sourceAudioInfo.id) return;
-    const calculateLocalIndex = async () => {
-      const currentProject = projects.find(p => p.id === selectedProjectId);
-      if (!currentProject) return;
-      const lineWithBlobIds = currentProject.chapters.flatMap(ch => ch.scriptLines.map(line => ({ lineId: line.id, blobId: line.audioBlobId }))).filter(l => l.blobId);
-      const blobs = await db.audioBlobs.bulkGet(lineWithBlobIds.map(l => l.blobId!));
-      const validLineIds = new Set(blobs.map((b, i) => b?.sourceAudioId === sourceAudioInfo.id ? lineWithBlobIds[i].lineId : null).filter((v): v is string => !!v));
-      const orderedLines = lineWithBlobIds.filter(l => validLineIds.has(l.lineId));
-      setMarkerState(prev => ({ ...prev, localLineIndex: orderedLines.findIndex(item => item.lineId === currentLineId)}));
-    };
-    calculateLocalIndex();
+  const calculateLocalLineIndex = useCallback(async (): Promise<number> => {
+    if (!currentLineId || !sourceAudioInfo.id) return -1;
+    const currentProject = projects.find(p => p.id === selectedProjectId);
+    if (!currentProject) return -1;
+    const lineWithBlobIds = currentProject.chapters
+      .flatMap(ch => ch.scriptLines.map(line => ({ lineId: line.id, blobId: line.audioBlobId })))
+      .filter(l => l.blobId);
+    const blobs = await db.audioBlobs.bulkGet(lineWithBlobIds.map(l => l.blobId!));
+    const validLineIds = new Set(
+      blobs
+        .map((b, i) => (b?.sourceAudioId === sourceAudioInfo.id ? lineWithBlobIds[i].lineId : null))
+        .filter((v): v is string => !!v)
+    );
+    const orderedLines = lineWithBlobIds.filter(l => validLineIds.has(l.lineId));
+    return orderedLines.findIndex(item => item.lineId === currentLineId);
   }, [currentLineId, sourceAudioInfo.id, projects, selectedProjectId]);
+
+  const computeViewWindow = useCallback((markers: number[], segmentIndex: number, fullDuration: number, minSegmentIndex = 0) => {
+    const sortedMarkers = [...markers].sort((a, b) => a - b);
+    const segmentCount = sortedMarkers.length + 1;
+
+    if (segmentIndex < 0 || segmentCount <= 0 || contextLines < 0) {
+      return {
+        start: 0,
+        end: fullDuration,
+        currentLineStart: 0,
+      };
+    }
+
+    const safeMinSegmentIndex = Math.max(0, Math.min(minSegmentIndex, segmentCount - 1));
+    const clampedSegmentIndex = Math.max(safeMinSegmentIndex, Math.min(segmentIndex, segmentCount - 1));
+    const startSegment = Math.max(safeMinSegmentIndex, clampedSegmentIndex - contextLines);
+    const endSegment = Math.min(segmentCount - 1, clampedSegmentIndex + contextLines);
+
+    const start = startSegment === 0 ? 0 : (sortedMarkers[startSegment - 1] ?? 0);
+    const end = endSegment < sortedMarkers.length ? (sortedMarkers[endSegment] ?? fullDuration) : fullDuration;
+    const currentLineStart = clampedSegmentIndex === 0 ? 0 : (sortedMarkers[clampedSegmentIndex - 1] ?? 0);
+
+    const baseStart = Math.max(0, Math.min(start, fullDuration));
+    const baseEnd = Math.max(0, Math.min(end, fullDuration));
+    const baseCurrentLineStart = Math.max(0, Math.min(currentLineStart, fullDuration));
+
+    // Give a little room to drag boundary markers earlier/later without leaving the window.
+    const paddingSeconds = 2;
+    const paddedStart = Math.max(0, Math.min(baseStart - paddingSeconds, fullDuration));
+    const paddedEnd = Math.max(0, Math.min(baseEnd + paddingSeconds, fullDuration));
+
+    return {
+      start: paddedStart,
+      end: Math.max(paddedStart, paddedEnd),
+      currentLineStart: baseCurrentLineStart,
+    };
+  }, [contextLines]);
+
+  const sliceAudioToWavBlob = useCallback((audioContext: AudioContext, audioBuffer: AudioBuffer, startTime: number, endTime: number): Blob => {
+    const start = Math.max(0, Math.min(startTime, audioBuffer.duration));
+    const end = Math.max(0, Math.min(endTime, audioBuffer.duration));
+    const startSample = Math.floor(start * audioBuffer.sampleRate);
+    const endSample = Math.floor(end * audioBuffer.sampleRate);
+    const frameCount = Math.max(0, endSample - startSample);
+
+    if (frameCount <= 0) {
+      return bufferToWav(audioBuffer);
+    }
+
+    const segmentBuffer = audioContext.createBuffer(
+      audioBuffer.numberOfChannels,
+      frameCount,
+      audioBuffer.sampleRate
+    );
+
+    for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
+      segmentBuffer.copyToChannel(audioBuffer.getChannelData(ch).subarray(startSample, endSample), ch);
+    }
+
+    return bufferToWav(segmentBuffer);
+  }, []);
 
   // WaveSurfer instance lifecycle
   useEffect(() => {
@@ -189,6 +279,7 @@ export const useWaveSurfer = ({
     setError(null);
 
     const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ latencyHint: 'interactive', sampleRate: 48000 });
+    audioContextRef.current = audioContext;
     const ws = WaveSurfer.create({
       container: waveformRef.current,
       waveColor: WAVE_BG_COLOR,
@@ -215,25 +306,90 @@ export const useWaveSurfer = ({
     wavesurferRef.current = ws;
 
     const loadAudioAndMarkers = async () => {
+        const runId = ++loadRunIdRef.current;
         try {
             const masterAudio = await db.masterAudios.get(sourceAudioInfo.id);
             if (!masterAudio) throw new Error('母带音频未找到');
-            void ws.loadBlob(masterAudio.data);
 
-            const customMarkers = await db.audioMarkers.get(sourceAudioInfo.id);
-            if (customMarkers?.markers?.length > 0) {
-                setMarkerState(prev => ({...prev, markers: customMarkers.markers}));
-                setHistoryState({ history: [customMarkers.markers], index: 0, canUndo: false, canRedo: false });
+            const arrayBuffer = await masterAudio.data.arrayBuffer();
+            const decoded = await audioContext.decodeAudioData(arrayBuffer);
+            fullAudioBufferRef.current = decoded;
+            fullDurationRef.current = decoded.duration;
+
+            const markerSet = await db.audioMarkers.get(sourceAudioInfo.id);
+            let loadedSkipHeadSegments = Math.max(0, Math.floor(markerSet?.skipHeadSegments ?? 0));
+            let markersToUse: number[];
+            if (markerSet?.markers?.length > 0) {
+                markersToUse = markerSet.markers;
             } else {
-              // Generate initial markers from existing audio segments
+              // Generate initial markers from existing audio segments (relative to the first assigned line)
               const initialMarkers = await generateInitialMarkersFromSegments(sourceAudioInfo.id, projects, selectedProjectId);
-              setMarkerState(prev => ({...prev, markers: initialMarkers}));
-              setHistoryState({ history: [initialMarkers], index: 0, canUndo: false, canRedo: false });
+              markersToUse = initialMarkers;
             }
+
+            // Backward-compat: legacy trimStart (seconds) => treat as an "intro segment" boundary marker.
+            const legacyTrimStart = Math.max(0, markerSet?.trimStart ?? 0);
+            if (markerSet && markerSet.skipHeadSegments == null && legacyTrimStart > 0) {
+              loadedSkipHeadSegments = 1;
+              markersToUse = [legacyTrimStart, ...markersToUse.map(m => legacyTrimStart + m)];
+            }
+
+            const fullDuration = decoded.duration;
+            const normalizedMarkers = markersToUse
+              .filter((m) => Number.isFinite(m))
+              .map((m) => Math.max(0, Math.min(fullDuration, m)))
+              .filter((m) => m > 0 && m < fullDuration)
+              .sort((a, b) => a - b)
+              .filter((m, i, arr) => i === 0 || m - arr[i - 1] > 1e-4);
+
+            loadedSkipHeadSegments = Math.max(0, Math.min(loadedSkipHeadSegments, normalizedMarkers.length));
+
+            if (loadRunIdRef.current !== runId) return;
+
+            setSkipHeadSegments(loadedSkipHeadSegments);
+            skipHeadSegmentsRef.current = loadedSkipHeadSegments;
+
+            setMarkerState(prev => ({...prev, markers: normalizedMarkers }));
+            setHistoryState({ history: [normalizedMarkers], index: 0, canUndo: false, canRedo: false });
+
+            const localLineIndex = await calculateLocalLineIndex();
+            if (loadRunIdRef.current !== runId) return;
+
+            const segmentIndex = localLineIndex >= 0 ? localLineIndex + loadedSkipHeadSegments : -1;
+            const view = computeViewWindow(normalizedMarkers, segmentIndex, fullDuration, loadedSkipHeadSegments);
+            viewWindowStartRef.current = view.start;
+            viewWindowEndRef.current = view.end;
+
+            setMarkerState(prev => ({
+              ...prev,
+              localLineIndex,
+              segmentIndex,
+              selectedMarkerIndex: null,
+              mousePosition: null,
+            }));
+
+            setWavesurferState(prev => ({ ...prev, isReady: false, isPlaying: false, duration: 0, pxPerSec: 0 }));
+            setIsLoading(true);
+
+            const windowBlob = sliceAudioToWavBlob(
+              audioContext,
+              decoded,
+              view.start,
+              view.end
+            );
+            await ws.loadBlob(windowBlob);
+            if (loadRunIdRef.current !== runId) return;
+
+            if (scrollRef.current) {
+              scrollRef.current.scrollLeft = 0;
+            }
+
+            const localSeekTime = Math.max(0, Math.min(ws.getDuration(), view.currentLineStart - view.start));
+            ws.setTime(localSeekTime);
 // FIX: Catch block parameter must be of type 'any' or 'unknown' if specified. Safely handle the error object by checking its type before accessing properties.
         } catch (e: unknown) {
+            if (loadRunIdRef.current !== runId) return;
             setError(e instanceof Error ? e.message : '加载音频失败');
-        } finally {
             setIsLoading(false);
         }
     };
@@ -252,12 +408,73 @@ export const useWaveSurfer = ({
     });
 
     return () => {
+      loadRunIdRef.current++;
       ws.destroy();
       if (audioContext.state !== 'closed') audioContext.close();
       wavesurferRef.current = null;
+      audioContextRef.current = null;
+      fullAudioBufferRef.current = null;
+      fullDurationRef.current = 0;
+      viewWindowStartRef.current = 0;
+      viewWindowEndRef.current = 0;
       setWavesurferState(prev => ({ ...prev, isReady: false, duration: 0, pxPerSec: 0 }));
     };
   }, [isOpen, sourceAudioInfo.id]);
+
+  useEffect(() => {
+    const refreshWindowForLine = async () => {
+      if (!isOpen) return;
+      const ws = wavesurferRef.current;
+      const audioContext = audioContextRef.current;
+      const fullBuffer = fullAudioBufferRef.current;
+      if (!ws || !audioContext || !fullBuffer) return;
+
+      const runId = ++loadRunIdRef.current;
+      try {
+        setIsLoading(true);
+        const localLineIndex = await calculateLocalLineIndex();
+        if (loadRunIdRef.current !== runId) return;
+
+        const fullDuration = fullDurationRef.current || fullBuffer.duration;
+        const segmentIndex = localLineIndex >= 0 ? localLineIndex + skipHeadSegmentsRef.current : -1;
+        const view = computeViewWindow(markersRef.current, segmentIndex, fullDuration, skipHeadSegmentsRef.current);
+        viewWindowStartRef.current = view.start;
+        viewWindowEndRef.current = view.end;
+
+        setMarkerState(prev => ({
+          ...prev,
+          localLineIndex,
+          segmentIndex,
+          selectedMarkerIndex: null,
+          mousePosition: null,
+        }));
+
+        setWavesurferState(prev => ({ ...prev, isReady: false, isPlaying: false, duration: 0, pxPerSec: 0 }));
+
+        const windowBlob = sliceAudioToWavBlob(
+          audioContext,
+          fullBuffer,
+          view.start,
+          view.end
+        );
+        await ws.loadBlob(windowBlob);
+        if (loadRunIdRef.current !== runId) return;
+
+        if (scrollRef.current) {
+          scrollRef.current.scrollLeft = 0;
+        }
+
+        const localSeekTime = Math.max(0, Math.min(ws.getDuration(), view.currentLineStart - view.start));
+        ws.setTime(localSeekTime);
+      } catch (e) {
+        if (loadRunIdRef.current !== runId) return;
+        console.error('Failed to refresh waveform window:', e);
+        setIsLoading(false);
+      }
+    };
+
+    void refreshWindowForLine();
+  }, [currentLineId, contextLines, isOpen, calculateLocalLineIndex, computeViewWindow, sliceAudioToWavBlob, skipHeadSegments]);
   
   // Zoom logic
   useEffect(() => {
@@ -280,10 +497,20 @@ export const useWaveSurfer = ({
 
   // Interaction handlers
   const handlePlayPause = useCallback(() => wavesurferRef.current?.playPause(), []);
+  const handlePause = useCallback(() => {
+    const ws = wavesurferRef.current;
+    if (!ws) return;
+    try {
+      ws.pause();
+    } catch (err) {
+      console.error('Pause error:', err);
+    }
+  }, []);
   const handleAddMarker = useCallback(() => {
     if (wavesurferRef.current) {
-        const t = wavesurferRef.current.getCurrentTime();
-        pushToHistory([...markerState.markers, t].sort((a, b) => a - b));
+        const localTime = wavesurferRef.current.getCurrentTime();
+        const relativeTime = viewWindowStartRef.current + localTime;
+        pushToHistory([...markerState.markers, relativeTime].sort((a, b) => a - b));
     }
   }, [markerState.markers, pushToHistory]);
   const handleRemoveMarker = useCallback(() => {
@@ -306,8 +533,20 @@ export const useWaveSurfer = ({
         setMarkerState(prev => ({...prev, markers: historyState.history[newIndex]}));
     }
   }, [historyState.canRedo, historyState.index, historyState.history]);
-  const handleSave = useCallback(() => onSave(sourceAudioInfo.id, markerState.markers), [onSave, sourceAudioInfo.id, markerState.markers]);
+  const handleSave = useCallback(() => onSave(sourceAudioInfo.id, markerState.markers, skipHeadSegmentsRef.current), [onSave, sourceAudioInfo.id, markerState.markers, skipHeadSegments]);
   const handleZoomChange = useCallback((level: number) => setWavesurferState(prev => ({...prev, zoomLevel: level})), []);
+  const handleSkipHeadSegmentsChange = useCallback((value: number) => {
+    const maxSkip = markersRef.current.length;
+    const clamped = Math.max(0, Math.min(Math.floor(value), maxSkip));
+    setSkipHeadSegments(clamped);
+  }, []);
+  const handleResetSkipHeadSegments = useCallback(() => setSkipHeadSegments(0), []);
+  const handleSetSkipHeadFromSelectedMarker = useCallback(() => {
+    if (markerState.selectedMarkerIndex === null) return;
+    const maxSkip = markersRef.current.length;
+    const clamped = Math.max(0, Math.min(markerState.selectedMarkerIndex + 1, maxSkip));
+    setSkipHeadSegments(clamped);
+  }, [markerState.selectedMarkerIndex]);
   
   // Mouse and Keyboard interactions
   useEffect(() => {
@@ -376,7 +615,8 @@ export const useWaveSurfer = ({
             const rect = contentRef.current.getBoundingClientRect();
             const offset = scrollRef.current?.scrollLeft || 0;
             const x = me.clientX - rect.left + offset;
-            const newTime = Math.max(0, Math.min(wavesurferState.duration, x / wavesurferState.pxPerSec));
+            const localTime = Math.max(0, Math.min(wavesurferState.duration, x / wavesurferState.pxPerSec));
+            const newTime = viewWindowStartRef.current + localTime;
             currentMarkers = [...markerState.markers];
             currentMarkers[index] = newTime;
             currentMarkers.sort((a, b) => a - b);
@@ -427,15 +667,26 @@ export const useWaveSurfer = ({
     isPanning,
     wavesurferState,
     historyState,
-    markerState: { ...markerState, formatTime },
+    markerState: {
+      ...markerState,
+      formatTime,
+      visibleMarkers,
+      skipHeadSegments,
+      viewWindowStart: viewWindowStartRef.current,
+      viewWindowEnd: viewWindowEndRef.current,
+    },
     interactionHandlers: {
       handlePlayPause,
+      handlePause,
       handleAddMarker,
       handleRemoveMarker,
       handleUndo,
       handleRedo,
       handleSave,
       handleZoomChange,
+      handleSkipHeadSegmentsChange,
+      handleResetSkipHeadSegments,
+      handleSetSkipHeadFromSelectedMarker,
       handleMarkerMouseDown,
       handleContainerClick,
       handleContentMouseMove,

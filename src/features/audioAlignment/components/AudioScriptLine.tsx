@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { ScriptLine, Character, LineType, SilencePairing } from '../../../types';
+import { ScriptLine, Character, LineType, SilencePairing, PronunciationNote } from '../../../types';
 import { useStore } from '../../../store/useStore';
 import { db } from '../../../db';
 import { isHexColor, getContrastingTextColor } from '../../../lib/colorUtils';
 import { stripPostProductionMarkers, escapeHtml } from '../../../lib/postProductionTextUtils';
+import { tokenizeWithPronunciation } from '../../../lib/pronunciation';
 // FIX: Import `UploadIcon` to resolve the "Cannot find name 'UploadIcon'" error.
-import { TrashIcon, PlayIcon, PauseIcon, CheckCircleIcon, XMarkIcon, ReturnIcon, ArrowPathIcon, AdjustmentsVerticalIcon, UploadIcon } from '../../../components/ui/icons';
+import { TrashIcon, PlayIcon, PauseIcon, CheckCircleIcon, XMarkIcon, ReturnIcon, ArrowPathIcon, AdjustmentsVerticalIcon, UploadIcon, SpeakerXMarkIcon } from '../../../components/ui/icons';
 import NumberInput from '../../../components/ui/NumberInput';
 
 interface AudioScriptLineProps {
@@ -15,11 +16,14 @@ interface AudioScriptLineProps {
     character: Character | undefined;
     projectId: string;
     chapterId: string;
+    pronunciationNotes: PronunciationNote[];
     onRequestCalibration: (lineId: string, lineIndex: number, sourceAudioId: string, sourceAudioFilename: string) => void;
     isDimmed: boolean;
     isRecordingActive: boolean;
     onLineClick: () => void;
 }
+
+const NON_AUDIO_ROLE_NAMES = new Set(['[静音]', '静音', '音效', '[音效]', 'sfx']);
 
 const getLineType = (line: ScriptLine | undefined, characters: Character[]): LineType => {
     if (!line || !line.characterId) return 'narration';
@@ -102,7 +106,7 @@ const SilenceEditor: React.FC<{
 }
 
 
-const AudioScriptLine: React.FC<AudioScriptLineProps> = ({ line, index, nextLine, character, projectId, chapterId, onRequestCalibration, isDimmed, isRecordingActive, onLineClick }) => {
+const AudioScriptLine: React.FC<AudioScriptLineProps> = ({ line, index, nextLine, character, projectId, chapterId, pronunciationNotes, onRequestCalibration, isDimmed, isRecordingActive, onLineClick }) => {
     const { 
         assignAudioToLine, 
         updateLineAudio, 
@@ -110,6 +114,7 @@ const AudioScriptLine: React.FC<AudioScriptLineProps> = ({ line, index, nextLine
         playingLineInfo, 
         setPlayingLine, 
         clearPlayingLine,
+        fillAudioGapFromNext,
         toggleLineReturnMark,
         updateLineFeedback,
     } = useStore(state => ({
@@ -119,6 +124,7 @@ const AudioScriptLine: React.FC<AudioScriptLineProps> = ({ line, index, nextLine
         playingLineInfo: state.playingLineInfo,
         setPlayingLine: state.setPlayingLine,
         clearPlayingLine: state.clearPlayingLine,
+        fillAudioGapFromNext: state.fillAudioGapFromNext,
         toggleLineReturnMark: state.toggleLineReturnMark,
         updateLineFeedback: state.updateLineFeedback,
     }));
@@ -211,6 +217,7 @@ const AudioScriptLine: React.FC<AudioScriptLineProps> = ({ line, index, nextLine
     };
 
     const isNarration = !character || character.name.toLowerCase() === 'narrator';
+    const isNonAudioRole = !!character?.name && NON_AUDIO_ROLE_NAMES.has(character.name);
     
     const rowBgClass = !isNarration && character && !isHexColor(character.color) ? character.color : 'bg-slate-700';
     const rowBgStyle = !isNarration && character && isHexColor(character.color) ? { backgroundColor: character.color } : {};
@@ -247,8 +254,24 @@ const AudioScriptLine: React.FC<AudioScriptLineProps> = ({ line, index, nextLine
 
     const cleanedLineHtml = useMemo(() => {
         const stripped = stripPostProductionMarkers(line.text);
-        return escapeHtml(stripped).replace(/\r?\n/g, '<br>');
-    }, [line.text]);
+        const escapeWithNewlines = (raw: string) => escapeHtml(raw).replace(/\r?\n/g, '<br>');
+
+        if (!pronunciationNotes || pronunciationNotes.length === 0) {
+            return escapeWithNewlines(stripped);
+        }
+
+        const tokens = tokenizeWithPronunciation(stripped, pronunciationNotes);
+        return tokens
+            .map((t) => {
+                if (t.type === 'text') return escapeWithNewlines(t.value);
+
+                const term = escapeHtml(t.term);
+                const pinyin = escapeHtml(t.pinyin);
+                const titleAttr = t.note ? ` title="${escapeHtml(t.note)}"` : '';
+                return `<ruby class="pronunciation-ruby"${titleAttr}>${term}<rt>${pinyin}</rt></ruby>`;
+            })
+            .join('');
+    }, [line.text, pronunciationNotes]);
     
     const getCvChipStyle = () => {
         if (!character?.cvName) {
@@ -361,10 +384,22 @@ const AudioScriptLine: React.FC<AudioScriptLineProps> = ({ line, index, nextLine
                       <span title="已有音频">
                         <CheckCircleIcon className="w-5 h-5 text-green-500" />
                       </span>
-                  ) : (
-                      <span title="暂无音频">
-                        <XMarkIcon className="w-5 h-5 text-red-500" />
+                  ) : isNonAudioRole ? (
+                      <span title="该句为静音/音效，无需配音">
+                        <SpeakerXMarkIcon className="w-5 h-5 text-slate-400" />
                       </span>
+                  ) : (
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          await fillAudioGapFromNext(projectId, chapterId, line.id);
+                        }}
+                        disabled={isRecordingActive}
+                        className="p-1 rounded hover:bg-slate-700/50 disabled:opacity-50"
+                        title="缺音：点击补位并顺延对轨"
+                      >
+                        <XMarkIcon className="w-5 h-5 text-red-500" />
+                      </button>
                   )}
                    <button
                         onClick={() => toggleLineReturnMark(projectId, chapterId, line.id)}

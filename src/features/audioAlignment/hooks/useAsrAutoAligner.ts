@@ -1,6 +1,7 @@
 import React from 'react';
 import { db } from '../../../db';
 import { bufferToWav } from '../../../lib/wavEncoder';
+import { normalizeCharacterNameKey } from '../../../lib/characterName';
 import { Character, Chapter, MasterAudio, Project } from '../../../types';
 import mammoth from 'mammoth';
 
@@ -19,7 +20,7 @@ type AlignmentOp =
   | { kind: 'skipLine'; lineIndex: number }
   | { kind: 'skipUnit'; unitIndex: number };
 
-const NON_AUDIO_ROLE_NAMES = new Set(['[静音]', '音效', '[音效]']);
+const NON_AUDIO_ROLE_NAME_KEYS = new Set(['[静音]', '静音', '音效', '[音效]', 'sfx'].map(normalizeCharacterNameKey));
 
 const normalizeForMatch = (text: string): string => {
   return (text || '')
@@ -346,7 +347,7 @@ export const useAsrAutoAligner = (args: {
 
   const nonAudioCharacterIds = React.useMemo(() => {
     return characters
-      .filter((c) => NON_AUDIO_ROLE_NAMES.has(c.name))
+      .filter((c) => NON_AUDIO_ROLE_NAME_KEYS.has(normalizeCharacterNameKey(c.name)))
       .map((c) => c.id);
   }, [characters]);
 
