@@ -8,6 +8,7 @@ import ScriptEditorPanel from './components/script_editor_panel/ScriptEditorPane
 import { ControlsAndCharactersPanel } from './components/character_panel/ControlsAndCharactersPanel';
 import CharacterDetailsSidePanel from './components/character_side_panel/CharacterDetailsSidePanel';
 import EditorModals from './components/EditorModals';
+import LocalCodexTaskStatusBar from './components/LocalCodexTaskStatusBar';
 
 // Hooks
 import { useEditorPageLogic } from './hooks/useEditorPageLogic';
@@ -20,7 +21,7 @@ interface EditorPageProps {
   projects: Project[];
   characters: Character[];
   onProjectUpdate: (project: Project) => void;
-  onAddCharacter: (characterData: Pick<Character, 'name' | 'color' | 'textColor' | 'cvName' | 'description' | 'isStyleLockedToCv'>, projectId: string) => Character;
+  onAddCharacter: (characterData: Pick<Character, 'name' | 'color' | 'textColor' | 'cvName' | 'description' | 'profile' | 'isStyleLockedToCv'>, projectId: string) => Character;
   onDeleteCharacter: (characterId: string) => void;
   onToggleCharacterStyleLock: (characterId: string) => void;
   onBulkUpdateCharacterStylesForCV: (cvName: string, newBgColor: string, newTextColor: string) => void;
@@ -40,8 +41,16 @@ const EditorPage: React.FC<EditorPageProps> = (props) => {
     setIsAddChaptersModalOpen,
     handleSaveNewChapters,
     isImportModalOpen,
+    isLocalCodexTaskRunning,
+    localCodexTaskStatus,
+    dismissLocalCodexTaskStatus,
+    cancelLocalCodexTask,
+    handleResumeLocalCodexTaskAndCvUpdate,
     setIsImportModalOpen,
     handleImportAndCvUpdate,
+    handleAutoImportWithCodexAndCvUpdate,
+    handleAutoImportWithDeepSeekAndCvUpdate,
+    handleAutoImportWithLocalCodexAndCvUpdate,
   } = useEditorPageLogic(props);
 
   if (isLoadingProject) {
@@ -88,6 +97,20 @@ const EditorPage: React.FC<EditorPageProps> = (props) => {
           isImportModalOpen={isImportModalOpen}
           onCloseImportModal={() => setIsImportModalOpen(false)}
           onImportAndCvUpdate={handleImportAndCvUpdate}
+          onAutoImportWithCodex={handleAutoImportWithCodexAndCvUpdate}
+          onAutoImportWithLocalCodex={handleAutoImportWithLocalCodexAndCvUpdate}
+          onAutoImportWithDeepSeek={handleAutoImportWithDeepSeekAndCvUpdate}
+          isLocalCodexTaskRunning={isLocalCodexTaskRunning}
+        />
+        <LocalCodexTaskStatusBar
+          status={localCodexTaskStatus}
+          onCancel={() => {
+            void cancelLocalCodexTask();
+          }}
+          onResume={() => {
+            void handleResumeLocalCodexTaskAndCvUpdate();
+          }}
+          onDismiss={dismissLocalCodexTaskStatus}
         />
       </div>
     </EditorContext.Provider>

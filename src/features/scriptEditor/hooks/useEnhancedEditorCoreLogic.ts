@@ -1,5 +1,9 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef, Dispatch, SetStateAction } from 'react';
 import { Project, ScriptLine, CharacterFilterMode, Chapter } from '../../../types';
+import {
+  logLocalCodexPerf,
+  measureLocalCodexPerfSync,
+} from '../../../lib/localCodexPerfDebug';
 import { internalParseScriptToChapters } from '../../../lib/scriptParser';
 import { useStore } from '../../../store/useStore';
 
@@ -15,31 +19,95 @@ export const useEnhancedEditorCoreLogic = ({
   onProjectUpdate,
 }: UseEnhancedEditorCoreLogicProps) => {
   const [isLoadingProject, setIsLoadingProject] = useState(true);
-  const { selectedChapterId, setSelectedChapterId } = useStore(state => ({
+  const {
+    selectedChapterId,
+    setSelectedChapterId,
+    scriptEditorMultiSelectedChapterIds,
+    setScriptEditorMultiSelectedChapterIds,
+  } = useStore(state => ({
     selectedChapterId: state.selectedChapterId,
     setSelectedChapterId: state.setSelectedChapterId,
+    scriptEditorMultiSelectedChapterIds: state.scriptEditorMultiSelectedChapterIds,
+    setScriptEditorMultiSelectedChapterIds: state.setScriptEditorMultiSelectedChapterIds,
   }));
-  const [multiSelectedChapterIds, setMultiSelectedChapterIds] = useState<string[]>([]);
+  const multiSelectedChapterIds = scriptEditorMultiSelectedChapterIds;
+  const setMultiSelectedChapterIds = useCallback<Dispatch<SetStateAction<string[]>>>(
+    (value) => {
+      const prevIds = useStore.getState().scriptEditorMultiSelectedChapterIds || [];
+      const nextIdsRaw = typeof value === 'function' ? value(prevIds) : value;
+      const nextIds = Array.from(
+        new Set(
+          (Array.isArray(nextIdsRaw) ? nextIdsRaw : []).filter(
+            (chapterId): chapterId is string =>
+              typeof chapterId === 'string' && chapterId.trim() !== ''
+          )
+        )
+      );
+      if (
+        prevIds.length === nextIds.length &&
+        prevIds.every((chapterId, index) => chapterId === nextIds[index])
+      ) {
+        return;
+      }
+      setScriptEditorMultiSelectedChapterIds(nextIds);
+    },
+    [setScriptEditorMultiSelectedChapterIds]
+  );
   const [selectedLineForPlayback, setSelectedLineForPlayback] = useState<ScriptLine | null>(null);
   const [focusedScriptLineId, setFocusedScriptLineId] = useState<string | null>(null);
   const [characterFilterMode, setCharacterFilterMode] = useState<CharacterFilterMode>('all');
   const [cvFilter, setCvFilter] = useState<string | null>(null);
   const [history, setHistory] = useState<Project[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
+  const historyRef = useRef<Project[]>([]);
+  const historyIndexRef = useRef(-1);
   const pendingNewChapterIdRef = useRef<string | null>(null);
 
-  const currentProject = useMemo(() => projects.find(p => p.id === projectId), [projects, projectId]);
+  const persistedProject = useMemo(
+    () => projects.find((project) => project.id === projectId) || null,
+    [projects, projectId]
+  );
+  const currentProject = useMemo(() => {
+    const projectFromHistory =
+      historyIndex >= 0
+        ? history[historyIndex] ?? history[history.length - 1] ?? null
+        : null;
+
+    if (projectFromHistory?.id === projectId) {
+      if (!persistedProject) {
+        return projectFromHistory;
+      }
+
+      if (
+        (projectFromHistory.lastModified || 0) >=
+        (persistedProject.lastModified || 0)
+      ) {
+        return projectFromHistory;
+      }
+    }
+
+    return persistedProject ?? projectFromHistory ?? null;
+  }, [history, historyIndex, persistedProject, projectId]);
 
   const canUndo = historyIndex > 0;
   const canRedo = historyIndex < history.length - 1;
 
   useEffect(() => {
+    historyRef.current = history;
+    historyIndexRef.current = historyIndex;
+  }, [history, historyIndex]);
+
+  useEffect(() => {
     if (currentProject) {
+      const sourceProject = currentProject;
       setIsLoadingProject(false);
       
-      const isProjectSwitch = history.length === 0 || history[history.length - 1].id !== currentProject.id;
+      const isProjectSwitch =
+        history.length === 0 || history[history.length - 1].id !== sourceProject.id;
       if (isProjectSwitch) {
-        setHistory([currentProject]);
+        historyRef.current = [sourceProject];
+        historyIndexRef.current = 0;
+        setHistory([sourceProject]);
         setHistoryIndex(0);
         setCvFilter(null); // Reset filter on project change
         // NOTE: Initial chapter selection is now fully handled by the `setSelectedProjectId` action in the store,
@@ -48,19 +116,19 @@ export const useEnhancedEditorCoreLogic = ({
       
       // If the selected chapter ID is no longer valid (e.g., deleted), clear it.
       // 防抖：如果是刚拆章产生的新 ID，等待下一次项目刷新再决定，避免误清空。
-      if (selectedChapterId && !currentProject.chapters.some(ch => ch.id === selectedChapterId)) {
+      if (selectedChapterId && !sourceProject.chapters.some(ch => ch.id === selectedChapterId)) {
         const latest = history.length > 0 ? history[history.length - 1] : null;
         const existsInLatest = latest?.chapters?.some(ch => ch.id === selectedChapterId);
         const isPendingNewChapter = pendingNewChapterIdRef.current === selectedChapterId;
         if (!existsInLatest && !isPendingNewChapter) {
           console.info('[Editor] clearing selectedChapterId because not found in currentProject', {
             selectedChapterId,
-            chapters: currentProject.chapters.length,
-            projectHasPending: currentProject.chapters.some(ch => ch.id === pendingNewChapterIdRef.current),
+            chapters: sourceProject.chapters.length,
+            projectHasPending: sourceProject.chapters.some(ch => ch.id === pendingNewChapterIdRef.current),
           });
           setSelectedChapterId(null);
         }
-      } else if (pendingNewChapterIdRef.current && currentProject.chapters.some(ch => ch.id === pendingNewChapterIdRef.current)) {
+      } else if (pendingNewChapterIdRef.current && sourceProject.chapters.some(ch => ch.id === pendingNewChapterIdRef.current)) {
         // 新章节已反映到 props，清理 pending 状态
         console.info('[Editor] pending new chapter now present, clearing pending flag', { pendingId: pendingNewChapterIdRef.current });
         pendingNewChapterIdRef.current = null;
@@ -68,33 +136,95 @@ export const useEnhancedEditorCoreLogic = ({
     }
   }, [currentProject, selectedChapterId, history, setSelectedChapterId]);
 
+  const resolveLatestProjectSnapshot = useCallback(() => {
+    const projectFromHistory =
+      historyIndexRef.current >= 0
+        ? historyRef.current[historyIndexRef.current] ??
+          historyRef.current[historyRef.current.length - 1] ??
+          null
+        : null;
+
+    if (projectFromHistory?.id === projectId) {
+      return projectFromHistory;
+    }
+
+    const projectFromStore = useStore.getState().projects.find(p => p.id === projectId);
+    if (projectFromStore) {
+      return projectFromStore;
+    }
+
+    return currentProject ?? projectFromHistory ?? null;
+  }, [currentProject, projectId]);
+
   const applyUndoableProjectUpdate = useCallback((updater: (prevProject: Project) => Project) => {
-    // FIX: Use the up-to-date currentProject from the hook's scope, not a stale one from history.
-    const projectToUpdate = currentProject;
+    // Always base updates on the latest in-memory snapshot so sequential chapter writes do not
+    // overwrite each other with an older project closure.
+    const projectToUpdate = resolveLatestProjectSnapshot();
     if (!projectToUpdate) return;
 
-    const newProject = updater(projectToUpdate);
-    const newHistory = history.slice(0, historyIndex + 1);
-    setHistory([...newHistory, newProject]);
-    setHistoryIndex(newHistory.length);
-    onProjectUpdate(newProject);
-  }, [history, historyIndex, onProjectUpdate, currentProject]); // Add currentProject dependency
+    const { result: updatedProject, durationMs: updaterDurationMs } = measureLocalCodexPerfSync(
+      'useEnhancedEditorCoreLogic.applyUndoableProjectUpdate.updater',
+      () => updater(projectToUpdate)
+    );
+    const newProject = {
+      ...updatedProject,
+      lastModified: Date.now(),
+    };
+    const { result: nextHistory, durationMs: historyUpdateDurationMs } = measureLocalCodexPerfSync(
+      'useEnhancedEditorCoreLogic.applyUndoableProjectUpdate.historyUpdate',
+      () => {
+        const computedHistory = [
+          ...historyRef.current.slice(0, historyIndexRef.current + 1),
+          newProject,
+        ];
+
+        historyRef.current = computedHistory;
+        historyIndexRef.current = computedHistory.length - 1;
+        setHistory(computedHistory);
+        setHistoryIndex(computedHistory.length - 1);
+        return computedHistory;
+      }
+    );
+    const { result: onProjectUpdateResult, durationMs: onProjectUpdateDurationMs } =
+      measureLocalCodexPerfSync(
+        'useEnhancedEditorCoreLogic.applyUndoableProjectUpdate.onProjectUpdate',
+        () => onProjectUpdate(newProject)
+      );
+
+    logLocalCodexPerf('useEnhancedEditorCoreLogic.applyUndoableProjectUpdate', {
+      projectId: newProject.id,
+      chapterCount: newProject.chapters.length,
+      historyLength: nextHistory.length,
+      updaterDurationMs,
+      historyUpdateDurationMs,
+      onProjectUpdateDurationMs,
+      onProjectUpdateReturnedPromise:
+        !!onProjectUpdateResult &&
+        typeof (onProjectUpdateResult as Promise<unknown>).then === 'function',
+    });
+  }, [onProjectUpdate, resolveLatestProjectSnapshot]);
 
   const undo = useCallback(() => {
     if (canUndo) {
-      const newIndex = historyIndex - 1;
+      const newIndex = historyIndexRef.current - 1;
+      if (newIndex < 0) return;
+
+      historyIndexRef.current = newIndex;
       setHistoryIndex(newIndex);
-      onProjectUpdate(history[newIndex]);
+      onProjectUpdate(historyRef.current[newIndex]);
     }
-  }, [canUndo, history, historyIndex, onProjectUpdate]);
+  }, [canUndo, onProjectUpdate]);
 
   const redo = useCallback(() => {
     if (canRedo) {
-      const newIndex = historyIndex + 1;
+      const newIndex = historyIndexRef.current + 1;
+      if (newIndex >= historyRef.current.length) return;
+
+      historyIndexRef.current = newIndex;
       setHistoryIndex(newIndex);
-      onProjectUpdate(history[newIndex]);
+      onProjectUpdate(historyRef.current[newIndex]);
     }
-  }, [canRedo, history, historyIndex, onProjectUpdate]);
+  }, [canRedo, onProjectUpdate]);
   
   const parseProjectChaptersAndUpdateHistory = useCallback(() => {
     if (!currentProject || !currentProject.rawFullScript) return;

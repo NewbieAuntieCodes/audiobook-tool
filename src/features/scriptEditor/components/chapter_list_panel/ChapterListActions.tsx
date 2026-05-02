@@ -15,6 +15,7 @@ interface ChapterActionsHookReturn {
   getAnnotationButtonText: (baseText: string, forAi: boolean) => string;
   isProcessingDisabled: (forOperation: 'ai' | 'manual' | 'import') => boolean;
   isAnyOperationLoading: boolean;
+  isActionControlsDisabled: boolean;
 }
 
 interface ChapterListActionsProps {
@@ -29,6 +30,7 @@ const providers: { key: AiProvider; name: string }[] = [
     { key: 'openai', name: 'GPT' },
     { key: 'moonshot', name: 'Moonshot' },
     { key: 'deepseek', name: 'DeepSeek' },
+    { key: 'codex', name: 'Codex' },
 ];
 
 const ChapterListActions: React.FC<ChapterListActionsProps> = ({
@@ -43,7 +45,8 @@ const ChapterListActions: React.FC<ChapterListActionsProps> = ({
     handleOpenImportModal,
     getAnnotationButtonText,
     isProcessingDisabled,
-    isAnyOperationLoading 
+    isAnyOperationLoading,
+    isActionControlsDisabled,
   } = chapterActions;
 
   const { openScriptImport, allCvNames, cvFilter, setCvFilter } = useEditorContext();
@@ -96,7 +99,7 @@ const ChapterListActions: React.FC<ChapterListActionsProps> = ({
               <button
                 type="button"
                 onClick={() => setIsAiDropdownOpen(prev => !prev)}
-                disabled={isAnyOperationLoading}
+                disabled={isActionControlsDisabled}
                 className="px-1.5 py-2 bg-purple-700 hover:bg-purple-800 text-white rounded-r-md disabled:opacity-50"
               >
                 <ChevronDownIcon className="w-4 h-4" />
@@ -124,16 +127,18 @@ const ChapterListActions: React.FC<ChapterListActionsProps> = ({
             </div>
              <button
               onClick={openScriptImport}
-              className="flex items-center justify-center px-2 py-2 bg-green-600 hover:bg-green-700 text-white rounded-md text-xs font-medium transition-colors"
+              className="flex items-center justify-center px-2 py-2 bg-green-600 hover:bg-green-700 text-white rounded-md text-xs font-medium transition-colors disabled:opacity-50"
               title="从 .txt 或 .docx 文件导入新章节和脚本"
+              disabled={isActionControlsDisabled}
             >
               <UploadIcon className="w-4 h-4 mr-1" />
               导入
             </button>
             <button
               onClick={onOpenExportModal}
-              className="flex items-center justify-center px-2 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-md text-xs font-medium transition-colors"
+              className="flex items-center justify-center px-2 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-md text-xs font-medium transition-colors disabled:opacity-50"
               title="将选中章节或当前章节导出为 .docx 画本文件"
+              disabled={isActionControlsDisabled}
             >
               <ArrowDownTrayIcon className="w-4 h-4 mr-1" />
               导出

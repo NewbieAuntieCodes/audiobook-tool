@@ -22,6 +22,8 @@ export const ControlsAndCharactersPanel: React.FC<ControlsAndCharactersPanelProp
     openCharacterSidePanel,
     openCvModal,
     openCharacterEditModal, 
+    generateCharacterProfileWithDeepSeek,
+    characterProfileGenerationId,
     characterFilterMode, 
     setCharacterFilterMode, 
   } = useEditorContext();
@@ -192,7 +194,11 @@ export const ControlsAndCharactersPanel: React.FC<ControlsAndCharactersPanelProp
               onOpenCvModal={openCvModal} 
               onOpenCharacterSidePanel={openCharacterSidePanel} 
               onEditCharacter={openCharacterEditModal} 
+              onGenerateAiProfile={(character) => {
+                void generateCharacterProfileWithDeepSeek(character);
+              }}
               onDeleteCharacter={onDeleteCharacter} 
+              isGeneratingAiProfile={characterProfileGenerationId === char.id}
               isSelectedForMerge={selectedCharacterIdsForMerge.includes(char.id)}
               onToggleSelectForMerge={handleToggleSelectForMerge}
             />

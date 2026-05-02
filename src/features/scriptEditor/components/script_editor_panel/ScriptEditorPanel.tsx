@@ -1,30 +1,20 @@
-import React, {
-  useState,
-  useEffect,
-  useRef,
-  useMemo,
-  useCallback,
-} from 'react';
-import ScriptLineItem from './ScriptLineItem';
-import LoadingSpinner from '../../../../components/ui/LoadingSpinner';
-import {
-  SplitIcon,
-  UndoIcon,
-  RedoIcon,
-  PencilIcon,
-  SaveIcon,
-  ScissorsIcon,
-  KeyboardIcon,
-  ArrowsRightLeftIcon,
-} from '../../../../components/ui/icons';
+import React, { useEffect, useRef } from 'react';
 import { useEditorContext } from '../../contexts/EditorContext';
 import { useScriptLineEditor } from '../../hooks/useScriptLineEditor';
-
-const formatChapterNumber = (index: number) => {
-  if (index < 0) return '';
-  const number = index + 1;
-  return number < 1000 ? String(number).padStart(3, '0') : String(number);
-};
+import ScriptEditorContent from './ScriptEditorContent';
+import LocalScriptRewriteModal from './LocalScriptRewriteModal';
+import LocalCodexTaskCenter from './LocalCodexTaskCenter';
+import LocalScriptRewriteTaskResultModal from './LocalScriptRewriteTaskResultModal';
+import ScriptEditorHeader from './ScriptEditorHeader';
+import { useLocalRewriteApplyActions } from './useLocalRewriteApplyActions';
+import { useLocalRewriteTaskCenter } from './useLocalRewriteTaskCenter';
+import { useRewriteSelectionController } from './useRewriteSelectionController';
+import { useScriptEditorHeaderState } from './useScriptEditorHeaderState';
+import { useScriptEditorKeyboardShortcuts } from './useScriptEditorKeyboardShortcuts';
+import { useScriptEditorPanelViewModel } from './useScriptEditorPanelViewModel';
+import { useScriptEditorSplitActions } from './useScriptEditorSplitActions';
+import { useScriptEditorTaskCenterActions } from './useScriptEditorTaskCenterActions';
+import useStore from '../../../../store/useStore';
 
 const ScriptEditorPanel: React.FC = () => {
   const {
@@ -39,72 +29,94 @@ const ScriptEditorPanel: React.FC = () => {
     canUndo,
     canRedo,
     selectedChapterId,
-    focusedScriptLineId,
-    setFocusedScriptLineId,
-    shortcutActiveLineId,
-    setShortcutActiveLineId,
+    setSelectedChapterId,
     openShortcutSettingsModal,
     isLoadingAiAnnotation,
     isLoadingManualParse,
+    localCodexTaskStatus,
+    cancelLocalCodexTask,
+    resumeLocalCodexTask,
+    dismissLocalCodexTaskStatus,
     openCvModal,
     addCustomSoundType,
     deleteCustomSoundType,
     splitChapterAtLine,
   } = useEditorContext();
 
-  const [isEditingHeaderTitle, setIsEditingHeaderTitle] = useState(false);
-  const [headerTitleInput, setHeaderTitleInput] = useState('');
-  const headerTitleInputRef = useRef<HTMLInputElement>(null);
-  const [editableRawContent, setEditableRawContent] = useState('');
-  const [isRawContentDirty, setIsRawContentDirty] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const lastFocusedLineIdRef = useRef<string | null>(null);
+  const addCharacter = useStore((state) => state.addCharacter);
 
-  const selectedChapter =
-    currentProject?.chapters.find((ch) => ch.id === selectedChapterId) || null;
-  const selectedChapterIndex =
-    selectedChapter && currentProject
-      ? currentProject.chapters.findIndex((ch) => ch.id === selectedChapter.id)
-      : -1;
+  const {
+    canMergeAdjacentSameCharacterInChapter,
+    characterIdsInChapter,
+    customSoundTypes,
+    displayTitle,
+    hasScriptLines,
+    isCurrentlyLoadingLines,
+    selectedChapter,
+    selectedChapterIndex,
+  } = useScriptEditorPanelViewModel({
+    currentProject,
+    isLoadingAiAnnotation,
+    isLoadingManualParse,
+    selectedChapterId,
+  });
+  const {
+    canStartLocalRewrite,
+    handleCloseLocalRewriteModal,
+    handleExitRewriteSelectionMode,
+    handleLocalRewriteButtonClick,
+    handleSelectRewriteLine,
+    isLocalRewriteModalOpen,
+    isRewriteSelectionMode,
+    resetLocalRewriteSelectionState,
+    rewriteSelectedBlocks,
+    rewriteSelectedSegments,
+    selectedRewriteLineIdSet,
+  } = useRewriteSelectionController({
+    characters,
+    selectedChapter,
+  });
+  const {
+    editableRawContent,
+    handleHeaderTitleBlur,
+    handleHeaderTitleClick,
+    handleHeaderTitleInputChange,
+    handleHeaderTitleKeyDown,
+    handleRawContentChange,
+    handleSaveRawContent,
+    headerTitleInput,
+    headerTitleInputRef,
+    isEditingHeaderTitle,
+    isRawContentDirty,
+  } = useScriptEditorHeaderState({
+    selectedChapter,
+    resetLocalRewriteSelectionState,
+    undoableUpdateChapterRawContent,
+    undoableUpdateChapterTitle,
+  });
 
-  useEffect(() => {
-    if (process.env.NODE_ENV === 'development') {
-      console.info('[ScriptEditorPanel] selection check', {
-        selectedChapterId,
-        selectedChapterIndex,
-        hasSelected: !!selectedChapter,
-        chapterCount: currentProject?.chapters.length || 0,
-        chaptersSample: currentProject?.chapters.slice(0, 3).map((ch) => ch.id) || [],
-      });
-    }
-  }, [selectedChapterId, selectedChapterIndex, selectedChapter, currentProject]);
-
-  useEffect(() => {
-    if (selectedChapter) {
-      setHeaderTitleInput(selectedChapter.title);
-      setIsEditingHeaderTitle(false);
-      setEditableRawContent(selectedChapter.rawContent);
-      setIsRawContentDirty(false);
-    } else {
-      setHeaderTitleInput('');
-      setEditableRawContent('');
-      setIsRawContentDirty(false);
-      setIsEditingHeaderTitle(false);
-    }
-  }, [selectedChapter]);
-
-  useEffect(() => {
-    if (isEditingHeaderTitle && headerTitleInputRef.current) {
-      headerTitleInputRef.current.focus();
-      headerTitleInputRef.current.select();
-    }
-  }, [isEditingHeaderTitle]);
-
-  useEffect(() => {
-    if (focusedScriptLineId) {
-      lastFocusedLineIdRef.current = focusedScriptLineId;
-    }
-  }, [focusedScriptLineId]);
+  const {
+    activeTaskCount,
+    activeTaskResult,
+    activeTaskResultApplyHint,
+    canApplyActiveTaskResult,
+    currentProjectTaskCount,
+    handleCancelRewriteTask,
+    handlePrioritizeRewriteTask,
+    handleRemoveRewriteTask,
+    isTaskCenterOpen,
+    setActiveTaskResultId,
+    setIsTaskCenterOpen,
+    setRewriteTasks,
+    setTaskProjectFilter,
+    taskCenterItems,
+    taskProjectFilter,
+    totalTaskCount,
+  } = useLocalRewriteTaskCenter({
+    currentProject,
+    localCodexTaskStatus,
+  });
 
   useEffect(() => {
     if (scrollContainerRef.current) {
@@ -118,7 +130,6 @@ const ScriptEditorPanel: React.FC = () => {
     handleSplitScriptLine,
     handleMergeAdjacentLines,
     handleMergeAllAdjacentSameCharacterLines,
-    handleDeleteScriptLine,
     handleUpdateSoundType,
     handleMoveScriptLine,
     handleUpdateScriptLineEmotion,
@@ -128,180 +139,58 @@ const ScriptEditorPanel: React.FC = () => {
     undoableProjectUpdate,
     selectedChapterId,
   );
+  const { shortcutActiveLineId, setShortcutActiveLineId } =
+    useScriptEditorKeyboardShortcuts({
+      currentProject,
+      onAssignCharacterToLine: handleAssignCharacterToLine,
+    });
+  const {
+    canSplitChapter,
+    canSplitFocusedLine,
+    handleSplitChapterMouseDown,
+    handleSplitMouseDown,
+    setFocusedScriptLineId,
+  } = useScriptEditorSplitActions({
+    handleSplitScriptLine,
+    selectedChapter,
+    splitChapterAtLine,
+  });
 
-  const activeLineIdForChapterSplit = useMemo(() => {
-    const candidate = focusedScriptLineId || lastFocusedLineIdRef.current;
-    if (!candidate || !selectedChapter) return null;
-    return selectedChapter.scriptLines.some((l) => l.id === candidate)
-      ? candidate
-      : null;
-  }, [focusedScriptLineId, selectedChapter]);
-
-  const canSplitFocusedLine = !!focusedScriptLineId;
-  const canSplitChapter = !!activeLineIdForChapterSplit;
-
-  const handleMoveLineUp = useCallback(
-    (lineId: string) => {
-      if (!selectedChapter) return;
-      handleMoveScriptLine(selectedChapter.id, lineId, -1);
-    },
-    [handleMoveScriptLine, selectedChapter],
-  );
-
-  const handleMoveLineDown = useCallback(
-    (lineId: string) => {
-      if (!selectedChapter) return;
-      handleMoveScriptLine(selectedChapter.id, lineId, 1);
-    },
-    [handleMoveScriptLine, selectedChapter],
-  );
-
-  const characterIdsInChapter = useMemo(() => {
-    if (!selectedChapter) return new Set<string>();
-    return new Set(
-      selectedChapter.scriptLines
-        .map((line) => line.characterId)
-        .filter((id): id is string => !!id),
-    );
-  }, [selectedChapter]);
-
-  const handleSplitClick = () => {
-    if (selectedChapter && focusedScriptLineId) {
-      const selection = window.getSelection();
-      if (!selection || selection.rangeCount === 0) return;
-      const range = selection.getRangeAt(0);
-      let el: Node | null = range.startContainer;
-      let contentEditableEl: HTMLElement | null = null;
-      while (el) {
-        if (
-          el.nodeType === Node.ELEMENT_NODE &&
-          (el as HTMLElement).isContentEditable
-        ) {
-          contentEditableEl = el as HTMLElement;
-          break;
-        }
-        el = el.parentElement;
-      }
-      if (contentEditableEl) {
-        const currentText = contentEditableEl.innerText;
-
-        // 计算光标在 contentEditable 内的文本索引，<br> 视为换行
-        const getTextLengthWithBreaks = (node: Node, stopAt?: { node: Node; offset: number }): number => {
-          let len = 0;
-          const walker = document.createTreeWalker(node, NodeFilter.SHOW_ALL, null);
-          let current: Node | null = walker.currentNode;
-          while (current) {
-            if (stopAt && current === stopAt.node) {
-              if (current.nodeType === Node.TEXT_NODE) {
-                len += (current.textContent || '').slice(0, stopAt.offset).replace(/\u200B/g, '').length;
-              }
-              break;
-            }
-            if (current.nodeType === Node.TEXT_NODE) {
-              len += (current.textContent || '').replace(/\u200B/g, '').length;
-            } else if ((current as HTMLElement).tagName === 'BR') {
-              len += 1; // 视为一个换行
-            }
-            current = walker.nextNode();
-          }
-          return len;
-        };
-
-        const splitIndex = getTextLengthWithBreaks(contentEditableEl, { node: range.startContainer, offset: range.startOffset });
-
-        handleSplitScriptLine(
-          selectedChapter.id,
-          focusedScriptLineId,
-          splitIndex,
-          currentText,
-        );
-      }
-    }
-  };
-
-  const handleSplitMouseDown = (e: React.MouseEvent<HTMLButtonElement>) => {
-    e.preventDefault();
-    handleSplitClick();
-  };
-
-  const handleSplitChapterClick = () => {
-    if (selectedChapter && activeLineIdForChapterSplit) {
-      splitChapterAtLine(selectedChapter.id, activeLineIdForChapterSplit);
-    }
-  };
-
-  const handleSplitChapterMouseDown = (
-    e: React.MouseEvent<HTMLButtonElement>,
-  ) => {
-    e.preventDefault();
-    handleSplitChapterClick();
-  };
-
-  const isCurrentlyLoadingLines =
-    selectedChapter &&
-    (isLoadingAiAnnotation || isLoadingManualParse) &&
-    selectedChapter.scriptLines.length === 0;
-
-  const handleHeaderTitleClick = () => {
-    if (!selectedChapter) return;
-    setHeaderTitleInput(selectedChapter.title);
-    setIsEditingHeaderTitle(true);
-  };
-
-  const saveHeaderTitle = () => {
-    if (!selectedChapter) return;
-    const trimmedTitle = headerTitleInput.trim();
-    if (trimmedTitle) {
-      undoableUpdateChapterTitle(selectedChapter.id, trimmedTitle);
-    } else {
-      setHeaderTitleInput(selectedChapter.title);
-      alert('章节标题不能为空。');
-    }
-    setIsEditingHeaderTitle(false);
-  };
-
-  const handleHeaderTitleKeyDown = (
-    e: React.KeyboardEvent<HTMLInputElement>,
-  ) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      saveHeaderTitle();
-    } else if (e.key === 'Escape') {
-      if (selectedChapter) setHeaderTitleInput(selectedChapter.title);
-      setIsEditingHeaderTitle(false);
-    }
-  };
-
-  const handleRawContentChange = (
-    e: React.ChangeEvent<HTMLTextAreaElement>,
-  ) => {
-    setEditableRawContent(e.target.value);
-    if (!isRawContentDirty) setIsRawContentDirty(true);
-  };
-
-  const handleSaveRawContent = () => {
-    if (selectedChapter && isRawContentDirty) {
-      undoableUpdateChapterRawContent(selectedChapter.id, editableRawContent);
-      setIsRawContentDirty(false);
-    }
-  };
-
-  const hasScriptLines =
-    !!selectedChapter && selectedChapter.scriptLines.length > 0;
-  const canMergeAdjacentSameCharacterInChapter = useMemo(() => {
-    if (!selectedChapter || selectedChapter.scriptLines.length < 2) return false;
-    const lines = selectedChapter.scriptLines;
-    for (let i = 1; i < lines.length; i++) {
-      const prev = lines[i - 1]?.characterId;
-      const cur = lines[i]?.characterId;
-      if (cur && prev && cur === prev) return true;
-    }
-    return false;
-  }, [selectedChapter]);
-  const displayTitle =
-    selectedChapter && selectedChapterIndex >= 0
-      ? `${formatChapterNumber(selectedChapterIndex)} ${selectedChapter.title}`
-      : '';
+  const {
+    handleApplyLocalRewrite,
+    handleApplyRewriteTaskResult,
+    handleRewriteTaskEnqueued,
+  } = useLocalRewriteApplyActions({
+    addCharacter,
+    characters,
+    currentProject,
+    handleRemoveRewriteTask,
+    resetLocalRewriteSelectionState,
+    setActiveTaskResultId,
+    setFocusedScriptLineId,
+    setIsTaskCenterOpen,
+    setRewriteTasks,
+    setSelectedChapterId,
+    undoableProjectUpdate,
+  });
+  const {
+    handleCancelTask,
+    handleCloseTaskResult,
+    handleOpenTaskResult,
+    handlePrioritizeTask,
+    handleRemoveTask,
+    handleResumeTask,
+    handleToggleTaskCenter,
+  } = useScriptEditorTaskCenterActions({
+    cancelLocalCodexTask,
+    dismissLocalCodexTaskStatus,
+    handleCancelRewriteTask,
+    handlePrioritizeRewriteTask,
+    handleRemoveRewriteTask,
+    resumeLocalCodexTask,
+    setActiveTaskResultId,
+    setIsTaskCenterOpen,
+  });
 
   if (!selectedChapter || selectedChapterIndex < 0) {
     return (
@@ -313,205 +202,112 @@ const ScriptEditorPanel: React.FC = () => {
 
   return (
     <div className="p-4 h-full flex flex-col bg-slate-800 text-slate-100">
-      <div className="sticky top-0 bg-slate-800 py-2 z-10 border-b border-slate-700 flex justify-between items-center pr-2">
-        {isEditingHeaderTitle ? (
-          <input
-            ref={headerTitleInputRef}
-            type="text"
-            value={headerTitleInput}
-            onChange={(e) => setHeaderTitleInput(e.target.value)}
-            onBlur={saveHeaderTitle}
-            onKeyDown={handleHeaderTitleKeyDown}
-            className="text-xl font-semibold text-sky-300 bg-slate-700 border border-sky-500 rounded px-2 py-1 outline-none focus:ring-1 focus:ring-sky-400 flex-grow mr-2"
-            aria-label={`编辑章节标题: ${selectedChapter.title}`}
-          />
-        ) : (
-          <div
-            className="flex items-center group cursor-pointer flex-grow min-w-0 mr-2"
-            onClick={handleHeaderTitleClick}
-            title="点击编辑标题"
-          >
-            <h3
-              className="text-xl font-semibold text-sky-300 truncate"
-              title={displayTitle}
-            >
-              {displayTitle}
-            </h3>
-            <PencilIcon className="w-4 h-4 text-slate-400 ml-2 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
-          </div>
-        )}
-        <div className="flex items-center space-x-2 flex-shrink-0">
-          <button
-            onClick={() => handleMergeAllAdjacentSameCharacterLines(selectedChapter.id)}
-            disabled={
-              isEditingHeaderTitle ||
-              isCurrentlyLoadingLines ||
-              !hasScriptLines ||
-              !canMergeAdjacentSameCharacterInChapter
-            }
-            title={
-              canMergeAdjacentSameCharacterInChapter
-                ? '合并本章相邻同角色行'
-                : '本章没有可合并的相邻同角色行'
-            }
-            className="flex items-center px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-md text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <ArrowsRightLeftIcon className="w-4 h-4 mr-1.5" />
-            合并相邻
-          </button>
-          <button
-            onClick={openShortcutSettingsModal}
-            disabled={isEditingHeaderTitle}
-            title="快捷键设置"
-            className="flex items-center px-3 py-1.5 bg-slate-600 hover:bg-slate-500 text-white rounded-md text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <KeyboardIcon className="w-4 h-4 mr-1.5" />
-            快捷键
-          </button>
-          <button
-            onClick={undo}
-            disabled={!canUndo || isEditingHeaderTitle}
-            title="撤销上一步操作"
-            className="flex items-center px-3 py-1.5 bg-slate-600 hover:bg-slate-500 text-white rounded-md text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <UndoIcon className="w-4 h-4 mr-1.5" />
-            撤销
-          </button>
-          <button
-            onClick={redo}
-            disabled={!canRedo || isEditingHeaderTitle}
-            title="重做上一步操作"
-            className="flex items-center px-3 py-1.5 bg-slate-600 hover:bg-slate-500 text-white rounded-md text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <RedoIcon className="w-4 h-4 mr-1.5" />
-            重做
-          </button>
-          <button
-            onMouseDown={handleSplitMouseDown}
-            disabled={!canSplitFocusedLine || isEditingHeaderTitle}
-            title={
-              canSplitFocusedLine
-                ? '在光标位置拆成两句'
-                : '先在要拆分的句子中放置光标'
-            }
-            className="flex items-center px-3 py-1.5 bg-orange-600 hover:bg-orange-700 text-white rounded-md text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <SplitIcon className="w-4 h-4 mr-1.5" />
-            拆句
-          </button>
-          <button
-            onMouseDown={handleSplitChapterMouseDown}
-            disabled={!canSplitChapter || isEditingHeaderTitle}
-            title={
-              canSplitChapter
-                ? '从当前句开始拆成新章节'
-                : '先选择要作为新章节开头的句子'
-            }
-            className="flex items-center px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-md text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <ScissorsIcon className="w-4 h-4 mr-1.5" />
-            拆章节
-          </button>
-        </div>
-      </div>
-      <div
-        ref={scrollContainerRef}
-        className="flex-grow overflow-y-auto pt-3 pr-1"
-      >
-        {isCurrentlyLoadingLines ? (
-          <div className="flex flex-col items-center justify-center h-64">
-            <LoadingSpinner />
-            <p className="mt-2 text-slate-400">
-              {isLoadingAiAnnotation
-                ? 'AI 正在生成带角色标注的台本...'
-                : '正在解析章节文本...'}
-            </p>
-          </div>
-        ) : hasScriptLines ? (
-          selectedChapter.scriptLines.map((line, index) => (
-            <ScriptLineItem
-              key={line.id}
-              line={line}
-              chapterId={selectedChapter.id}
-              characters={characters}
-              characterIdsInChapter={characterIdsInChapter}
-              onUpdateText={(lineId, newText) =>
-                handleUpdateScriptLineText(selectedChapter.id, lineId, newText)
-              }
-              onAssignCharacter={(lineId, charId) =>
-                handleAssignCharacterToLine(selectedChapter.id, lineId, charId)
-              }
-              onMergeLines={(lineId) =>
-                handleMergeAdjacentLines(selectedChapter.id, lineId)
-              }
-              onDelete={(lineId) =>
-                handleDeleteScriptLine(selectedChapter.id, lineId)
-              }
-              cvStyles={cvStyles}
-              isFocusedForSplit={focusedScriptLineId === line.id}
-              onUpdateSoundType={(lineId, soundType) =>
-                handleUpdateSoundType(selectedChapter.id, lineId, soundType)
-              }
-              onFocusChange={setFocusedScriptLineId}
-              shortcutActiveLineId={shortcutActiveLineId}
-              onActivateShortcutMode={setShortcutActiveLineId}
-              customSoundTypes={currentProject?.customSoundTypes || []}
-              onAddCustomSoundType={addCustomSoundType}
-              onDeleteCustomSoundType={deleteCustomSoundType}
-              canMoveUp={index > 0}
-              canMoveDown={index < selectedChapter.scriptLines.length - 1}
-              onMoveLineUp={() => handleMoveLineUp(line.id)}
-              onMoveLineDown={() => handleMoveLineDown(line.id)}
-              onOpenCvModal={openCvModal}
-              onUpdateEmotion={(lineId, emotion) =>
-                handleUpdateScriptLineEmotion(selectedChapter.id, lineId, emotion)
-              }
-            />
-          ))
-        ) : (
-          <div className="text-slate-400 space-y-3 p-3 h-full flex flex-col">
-            <p>
-              {selectedChapter.rawContent.trim() === ''
-                ? '这个章节还没有任何原始文本。'
-                : '还没有生成剧本行。'}
-              {selectedChapter.rawContent.trim() !== '' &&
-                ' 可以使用上方的 “AI 标注章节” 或 “手动解析章节” 按钮生成台本行。'}
-            </p>
-            <div className="mt-4 p-3 bg-slate-700 rounded-md flex flex-col flex-grow">
-              <div className="flex justify-between items-center mb-2 flex-shrink-0">
-                <h4 className="text-sm font-semibold text-slate-300">
-                  {hasScriptLines ? '原始章节内容预览' : '原始章节内容编辑'}
-                </h4>
-                {!hasScriptLines && (
-                  <button
-                    onClick={handleSaveRawContent}
-                    disabled={!isRawContentDirty}
-                    className="flex items-center px-2.5 py-1 text-xs bg-sky-600 hover:bg-sky-700 text-white rounded-md disabled:opacity-50"
-                    title={
-                      isRawContentDirty ? '保存对原始内容的修改' : '没有修改需要保存'
-                    }
-                  >
-                    <SaveIcon className="w-3.5 h-3.5 mr-1" />
-                    保存原文
-                  </button>
-                )}
-              </div>
-              {hasScriptLines ? (
-                <pre className="text-xs text-slate-300 whitespace-pre-wrap overflow-y-auto flex-grow bg-slate-800 p-4 rounded-md">
-                  {selectedChapter.rawContent}
-                </pre>
-              ) : (
-                <textarea
-                  value={editableRawContent}
-                  onChange={handleRawContentChange}
-                  className="text-xs text-slate-300 whitespace-pre-wrap overflow-y-auto flex-grow bg-slate-800 p-4 rounded-md w-full h-full resize-none border border-slate-600 focus:ring-1 focus:ring-sky-500 focus:border-sky-500 outline-none"
-                  aria-label="原始章节内容编辑"
-                />
-              )}
-            </div>
-          </div>
-        )}
-      </div>
+      <ScriptEditorHeader
+        isEditingHeaderTitle={isEditingHeaderTitle}
+        headerTitleInput={headerTitleInput}
+        headerTitleInputRef={headerTitleInputRef}
+        selectedChapterTitle={selectedChapter.title}
+        displayTitle={displayTitle}
+        isCurrentlyLoadingLines={!!isCurrentlyLoadingLines}
+        hasScriptLines={hasScriptLines}
+        canMergeAdjacentSameCharacterInChapter={canMergeAdjacentSameCharacterInChapter}
+        canUndo={canUndo}
+        canRedo={canRedo}
+        canSplitFocusedLine={canSplitFocusedLine}
+        canStartLocalRewrite={canStartLocalRewrite}
+        isRewriteSelectionMode={isRewriteSelectionMode}
+        rewriteSelectedSegmentsCount={rewriteSelectedSegments.length}
+        rewriteSelectedBlocksCount={rewriteSelectedBlocks.length}
+        canSplitChapter={canSplitChapter}
+        onHeaderTitleInputChange={handleHeaderTitleInputChange}
+        onHeaderTitleBlur={handleHeaderTitleBlur}
+        onHeaderTitleKeyDown={handleHeaderTitleKeyDown}
+        onHeaderTitleClick={handleHeaderTitleClick}
+        onMergeAdjacent={() => handleMergeAllAdjacentSameCharacterLines(selectedChapter.id)}
+        onOpenShortcutSettingsModal={openShortcutSettingsModal}
+        onUndo={undo}
+        onRedo={redo}
+        onSplitMouseDown={handleSplitMouseDown}
+        onLocalRewriteButtonClick={handleLocalRewriteButtonClick}
+        onExitRewriteSelectionMode={handleExitRewriteSelectionMode}
+        onSplitChapterMouseDown={handleSplitChapterMouseDown}
+      />
+      <ScriptEditorContent
+        chapterId={selectedChapter.id}
+        characters={characters}
+        characterIdsInChapter={characterIdsInChapter}
+        customSoundTypes={customSoundTypes}
+        cvStyles={cvStyles}
+        editableRawContent={editableRawContent}
+        hasScriptLines={hasScriptLines}
+        isCurrentlyLoadingLines={isCurrentlyLoadingLines}
+        isLoadingAiAnnotation={isLoadingAiAnnotation}
+        isRawContentDirty={isRawContentDirty}
+        isRewriteSelectionMode={isRewriteSelectionMode}
+        onActivateShortcutMode={setShortcutActiveLineId}
+        onAddCustomSoundType={addCustomSoundType}
+        onAssignCharacter={handleAssignCharacterToLine}
+        onDeleteCustomSoundType={deleteCustomSoundType}
+        onFocusChange={setFocusedScriptLineId}
+        onMergeLines={handleMergeAdjacentLines}
+        onMoveLine={handleMoveScriptLine}
+        onOpenCvModal={openCvModal}
+        onRawContentChange={handleRawContentChange}
+        onSaveRawContent={handleSaveRawContent}
+        onSelectForRewrite={handleSelectRewriteLine}
+        onUpdateSoundType={handleUpdateSoundType}
+        onUpdateText={handleUpdateScriptLineText}
+        rawContent={selectedChapter.rawContent}
+        rewriteSelectedBlocksCount={rewriteSelectedBlocks.length}
+        rewriteSelectedSegmentsCount={rewriteSelectedSegments.length}
+        scrollContainerRef={scrollContainerRef}
+        scriptLines={selectedChapter.scriptLines}
+        selectedRewriteLineIdSet={selectedRewriteLineIdSet}
+        shortcutActiveLineId={shortcutActiveLineId}
+      />
+      <LocalScriptRewriteModal
+        isOpen={isLocalRewriteModalOpen}
+        onClose={handleCloseLocalRewriteModal}
+        projectId={currentProject.id}
+        projectName={currentProject.name}
+        chapterId={selectedChapter.id}
+        chapterTitle={selectedChapter.title}
+        characters={characters}
+        selectedSegments={rewriteSelectedSegments}
+        onApplyRewrite={(payload) =>
+          handleApplyLocalRewrite({
+            chapterId: selectedChapter.id,
+            ...payload,
+          })
+        }
+        onEnqueueTask={handleRewriteTaskEnqueued}
+      />
+      <LocalCodexTaskCenter
+        tasks={taskCenterItems}
+        totalTaskCount={totalTaskCount}
+        activeTaskCount={activeTaskCount}
+        projectFilter={taskProjectFilter}
+        currentProjectLabel={currentProject.name}
+        currentProjectTaskCount={currentProjectTaskCount}
+        allProjectTaskCount={totalTaskCount}
+        isOpen={isTaskCenterOpen}
+        onToggleOpen={handleToggleTaskCenter}
+        onProjectFilterChange={setTaskProjectFilter}
+        onCancelTask={handleCancelTask}
+        onRemoveTask={handleRemoveTask}
+        onResumeTask={handleResumeTask}
+        onOpenTaskResult={handleOpenTaskResult}
+        onPrioritizeTask={handlePrioritizeTask}
+      />
+      <LocalScriptRewriteTaskResultModal
+        task={activeTaskResult}
+        onClose={handleCloseTaskResult}
+        canApplyToCurrentProject={canApplyActiveTaskResult}
+        applyHint={activeTaskResultApplyHint}
+        onApply={(task) => {
+          void handleApplyRewriteTaskResult(task);
+        }}
+      />
     </div>
   );
 };

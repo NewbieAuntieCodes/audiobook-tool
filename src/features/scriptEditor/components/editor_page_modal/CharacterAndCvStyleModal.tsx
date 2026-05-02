@@ -36,6 +36,13 @@ const CharacterAndCvStyleModal: React.FC<CharacterAndCvStyleModalProps> = ({
   
   const [charName, setCharName] = useState('');
   const [charDescription, setCharDescription] = useState('');
+  const [profileAge, setProfileAge] = useState('');
+  const [profileGender, setProfileGender] = useState('');
+  const [profileOccupation, setProfileOccupation] = useState('');
+  const [profilePersonality, setProfilePersonality] = useState('');
+  const [profileVoiceDirection, setProfileVoiceDirection] = useState('');
+  const [profileRelationships, setProfileRelationships] = useState('');
+  const [profileNotes, setProfileNotes] = useState('');
   
   const [charBgColorInput, setCharBgColorInput] = useState(defaultCharPreset.bgColorClass);
   const [charTextColorInput, setCharTextColorInput] = useState(defaultCharPreset.textColorClass);
@@ -58,6 +65,13 @@ const CharacterAndCvStyleModal: React.FC<CharacterAndCvStyleModalProps> = ({
     if (characterToEdit) {
       setCharName(characterToEdit.name);
       setCharDescription(characterToEdit.description || '');
+      setProfileAge(characterToEdit.profile?.age || '');
+      setProfileGender(characterToEdit.profile?.gender || '');
+      setProfileOccupation(characterToEdit.profile?.occupation || '');
+      setProfilePersonality(characterToEdit.profile?.personality || '');
+      setProfileVoiceDirection(characterToEdit.profile?.voiceDirection || '');
+      setProfileRelationships(characterToEdit.profile?.relationships || '');
+      setProfileNotes(characterToEdit.profile?.notes || '');
       
       setCharBgColorInput(characterToEdit.color || defaultCharPreset.bgColorClass);
       setCharTextColorInput(characterToEdit.textColor || defaultCharPreset.textColorClass);
@@ -87,6 +101,13 @@ const CharacterAndCvStyleModal: React.FC<CharacterAndCvStyleModalProps> = ({
       // or when it's closed and characterToEdit becomes null.
       setCharName('');
       setCharDescription('');
+      setProfileAge('');
+      setProfileGender('');
+      setProfileOccupation('');
+      setProfilePersonality('');
+      setProfileVoiceDirection('');
+      setProfileRelationships('');
+      setProfileNotes('');
       setCharBgColorInput(defaultCharPreset.bgColorClass);
       setCharTextColorInput(defaultCharPreset.textColorClass);
       setCustomCharBgInputText(defaultCharPreset.bgColorClass);
@@ -233,6 +254,15 @@ const CharacterAndCvStyleModal: React.FC<CharacterAndCvStyleModalProps> = ({
       id: characterToEdit ? characterToEdit.id : Date.now().toString() + "_newchar_" + Math.random(),
       name: charName.trim(),
       description: charDescription.trim(),
+      profile: {
+        age: profileAge.trim(),
+        gender: profileGender.trim(),
+        occupation: profileOccupation.trim(),
+        personality: profilePersonality.trim(),
+        voiceDirection: profileVoiceDirection.trim(),
+        relationships: profileRelationships.trim(),
+        notes: profileNotes.trim(),
+      },
       color: finalCharBg,
       textColor: finalCharText,
       cvName: cvNameInput.trim(),
@@ -285,7 +315,7 @@ const CharacterAndCvStyleModal: React.FC<CharacterAndCvStyleModalProps> = ({
         <form onSubmit={handleSubmit} className="space-y-6 overflow-y-auto flex-grow">
           <fieldset className="border border-slate-700 p-4 rounded-md">
             <legend className="text-lg font-medium text-sky-400 px-2">角色描述</legend>
-            <div>
+            <div className="space-y-3">
               <label htmlFor="charDescription" className="block text-sm font-medium text-slate-300 mb-1 sr-only">角色描述</label>
               <textarea 
                 id="charDescription" 
@@ -295,6 +325,78 @@ const CharacterAndCvStyleModal: React.FC<CharacterAndCvStyleModalProps> = ({
                 className="w-full p-2 bg-slate-700 text-slate-100 rounded-md border border-slate-600 focus:ring-sky-500 resize-y" 
                 placeholder="输入角色描述（可选）"
               />
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-1">年龄/年龄段</label>
+                  <input
+                    type="text"
+                    value={profileAge}
+                    onChange={(e) => setProfileAge(e.target.value)}
+                    className="w-full p-2 bg-slate-700 text-slate-100 rounded-md border border-slate-600 focus:ring-sky-500"
+                    placeholder="未明确"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-1">性别</label>
+                  <input
+                    type="text"
+                    value={profileGender}
+                    onChange={(e) => setProfileGender(e.target.value)}
+                    className="w-full p-2 bg-slate-700 text-slate-100 rounded-md border border-slate-600 focus:ring-sky-500"
+                    placeholder="未明确"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-1">身份/职业</label>
+                  <input
+                    type="text"
+                    value={profileOccupation}
+                    onChange={(e) => setProfileOccupation(e.target.value)}
+                    className="w-full p-2 bg-slate-700 text-slate-100 rounded-md border border-slate-600 focus:ring-sky-500"
+                    placeholder="未明确"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-1">性格</label>
+                <textarea
+                  value={profilePersonality}
+                  onChange={(e) => setProfilePersonality(e.target.value)}
+                  rows={2}
+                  className="w-full p-2 bg-slate-700 text-slate-100 rounded-md border border-slate-600 focus:ring-sky-500 resize-y"
+                  placeholder="角色性格"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-1">声线建议</label>
+                <textarea
+                  value={profileVoiceDirection}
+                  onChange={(e) => setProfileVoiceDirection(e.target.value)}
+                  rows={2}
+                  className="w-full p-2 bg-slate-700 text-slate-100 rounded-md border border-slate-600 focus:ring-sky-500 resize-y"
+                  placeholder="声音年龄、音色、语速、情绪基调"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-1">人物关系</label>
+                <textarea
+                  value={profileRelationships}
+                  onChange={(e) => setProfileRelationships(e.target.value)}
+                  rows={2}
+                  className="w-full p-2 bg-slate-700 text-slate-100 rounded-md border border-slate-600 focus:ring-sky-500 resize-y"
+                  placeholder="与其他角色的关系"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-1">其他</label>
+                <textarea
+                  value={profileNotes}
+                  onChange={(e) => setProfileNotes(e.target.value)}
+                  rows={2}
+                  className="w-full p-2 bg-slate-700 text-slate-100 rounded-md border border-slate-600 focus:ring-sky-500 resize-y"
+                  placeholder="补充信息"
+                />
+              </div>
             </div>
           </fieldset>
 

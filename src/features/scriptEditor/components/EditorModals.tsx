@@ -12,6 +12,10 @@ interface EditorModalsProps {
   isImportModalOpen: boolean;
   onCloseImportModal: () => void;
   onImportAndCvUpdate: (annotatedText: string) => Promise<void>;
+  onAutoImportWithCodex: () => Promise<void>;
+  onAutoImportWithLocalCodex: () => Promise<void>;
+  onAutoImportWithDeepSeek: (mode: 'flash' | 'pro') => Promise<void>;
+  isLocalCodexTaskRunning?: boolean;
 }
 
 const EditorModals: React.FC<EditorModalsProps> = ({
@@ -21,6 +25,10 @@ const EditorModals: React.FC<EditorModalsProps> = ({
   isImportModalOpen,
   onCloseImportModal,
   onImportAndCvUpdate,
+  onAutoImportWithCodex,
+  onAutoImportWithLocalCodex,
+  onAutoImportWithDeepSeek,
+  isLocalCodexTaskRunning = false,
 }) => {
   const { currentProject, selectedChapterId, multiSelectedChapterIds, characters } = useEditorContext();
   const { isShortcutSettingsModalOpen, closeShortcutSettingsModal } = useStore();
@@ -49,8 +57,12 @@ const EditorModals: React.FC<EditorModalsProps> = ({
         isOpen={isImportModalOpen}
         onClose={onCloseImportModal}
         onSubmit={onImportAndCvUpdate}
+        onAutoAnnotate={onAutoImportWithCodex}
+        onAutoAnnotateWithLocalCodex={onAutoImportWithLocalCodex}
+        onAutoAnnotateWithDeepSeek={onAutoImportWithDeepSeek}
         isLoading={useEditorContext().isLoadingImportAnnotation}
         chapterContentToCopy={chapterContentForAiPrompt}
+        isLocalCodexTaskRunning={isLocalCodexTaskRunning}
       />
       <AddChaptersModal 
         isOpen={isAddChaptersModalOpen}

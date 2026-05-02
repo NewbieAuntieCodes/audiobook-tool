@@ -1,12 +1,37 @@
-import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
+import { GoogleGenAI } from "@google/genai";
 import { AiAnnotatedLine } from '../types';
 import { ApiSettings, AiProvider } from '../store/slices/uiSlice';
+import { getResponsesApiJson } from './responsesApiService';
 
-const getOpenAICompatibleResponse = async (provider: AiProvider, settings: ApiSettings, prompt: string): Promise<any> => {
+type ChatCompletionProvider = Exclude<AiProvider, 'gemini' | 'codex'>;
+
+const codexAnnotationFormat = {
+  type: 'json_schema' as const,
+  name: 'annotated_script_lines',
+  strict: true,
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      items: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            line_text: { type: 'string' },
+            suggested_character_name: { type: 'string' },
+          },
+          required: ['line_text', 'suggested_character_name'],
+        },
+      },
+    },
+    required: ['items'],
+  },
+};
+
+const getOpenAICompatibleResponse = async (provider: ChatCompletionProvider, settings: ApiSettings, prompt: string): Promise<any> => {
     // FIX: The 'gemini' provider should not use this function. Add a guard to prevent this.
-    if (provider === 'gemini') {
-        throw new Error('getOpenAICompatibleResponse should not be called for the Gemini provider.');
-    }
     const config = settings[provider];
     if (!config || !config.apiKey || !config.baseUrl || !config.model) {
       throw new Error(`Configuration for ${provider} is incomplete. Check settings.`);
@@ -142,6 +167,16 @@ ${scriptText}
         const fenceRegex = /^```(\w*)?\s*\n?(.*?)\n?\s*```$/s;
         const match = jsonStr.match(fenceRegex);
         parsedData = JSON.parse(match ? match[2].trim() : jsonStr);
+        break;
+
+      case 'codex':
+        parsedData = await getResponsesApiJson<{ items: AiAnnotatedLine[] }>(
+          'codex',
+          settings,
+          prompt,
+          codexAnnotationFormat
+        );
+        parsedData = parsedData.items;
         break;
       
       case 'openai':

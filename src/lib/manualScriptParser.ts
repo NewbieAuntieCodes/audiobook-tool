@@ -7,6 +7,8 @@ interface ParsedSegment {
   isDialogue: boolean;
 }
 
+const FULL_BRACKET_DIALOGUE_REGEX = /^\s*[【\[]\s*([\s\S]*?)\s*[】\]]\s*$/;
+
 const getCharacterId = (
   name: string,
   existingCharacters: Character[],
@@ -82,6 +84,20 @@ export const parseRawTextToScriptLinesByRules = (
   const CHINESE_QUOTE_END = '”';
 
   for (const line of lines) {
+    const fullBracketDialogueMatch = line.match(FULL_BRACKET_DIALOGUE_REGEX);
+    if (fullBracketDialogueMatch) {
+      const text = line.trim();
+      const originalText = fullBracketDialogueMatch[1]?.trim() || '';
+      if (originalText) {
+        outputSegments.push({
+          text,
+          originalText,
+          isDialogue: true,
+        });
+        continue;
+      }
+    }
+
     let currentPos = 0;
     const lineLength = line.length;
 
@@ -177,4 +193,3 @@ export const parseRawTextToScriptLinesByRules = (
   // Each quoted segment should remain an independent text box.
   return scriptLines;
 };
-

@@ -1,10 +1,16 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { SoundGroup, SoundLibraryItem } from '../../../types';
 import { getNearestFolderNameFromSoundName, getSoundFileNameFromSoundName } from '../../../lib/soundPath';
-import { ensureHandlePermission } from '../../../lib/fileSystemAccess';
-import { sfxGroupLibraryRepository, soundLibraryRepository } from '../../../repositories';
 import LoadingSpinner from '../../../components/ui/LoadingSpinner';
-import * as mm from 'music-metadata-browser';
+import {
+  createSoundGroupId,
+  toDraftClips,
+  type DraftClip,
+  type SoundGroupKind,
+} from './soundGroupModalData';
+import { useSoundGroupModalDerivedData } from './useSoundGroupModalDerivedData';
+import { useSoundGroupPreviewActions } from './useSoundGroupPreviewActions';
+import { useSoundGroupLibraryBrowser } from './useSoundGroupLibraryBrowser';
 
 interface SoundGroupModalProps {
   isOpen: boolean;
@@ -17,23 +23,6 @@ interface SoundGroupModalProps {
   onDeleteGroup: (groupId: string) => void;
   groupUsageCountById?: Record<string, number>;
 }
-
-type DraftClip = {
-  soundId?: number;
-  soundName?: string;
-  offsetSeconds: number;
-};
-
-type SoundGroupKind = NonNullable<SoundGroup['kind']>;
-
-type LibraryGroupEntry = {
-  name: string;
-  reaperFileName: string;
-  previewWavFileName?: string;
-  durationSeconds?: number;
-};
-
-const createGroupId = (): string => `sg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 const SoundGroupModal: React.FC<SoundGroupModalProps> = ({
   isOpen,
@@ -52,91 +41,56 @@ const SoundGroupModal: React.FC<SoundGroupModalProps> = ({
   const [draftClips, setDraftClips] = useState<DraftClip[]>([]);
   const [draftDurationSeconds, setDraftDurationSeconds] = useState<number | undefined>(undefined);
   const [soundSearch, setSoundSearch] = useState('');
+  const {
+    handleClearLibraryDirectory,
+    handleSaveLibraryBasePath,
+    handleSelectLibraryDirectory,
+    isLibraryScanning,
+    libraryBasePath,
+    libraryGroups,
+    libraryRootHandle,
+    libraryScanError,
+    librarySearch,
+    setLibraryBasePath,
+    setLibrarySearch,
+  } = useSoundGroupLibraryBrowser({
+    isOpen,
+  });
 
-  const [libraryBasePath, setLibraryBasePath] = useState('');
-  const [libraryRootHandle, setLibraryRootHandle] = useState<FileSystemDirectoryHandle | null>(null);
-  const [isLibraryScanning, setIsLibraryScanning] = useState(false);
-  const [libraryGroups, setLibraryGroups] = useState<LibraryGroupEntry[]>([]);
-  const [libraryScanError, setLibraryScanError] = useState<string | null>(null);
-  const [librarySearch, setLibrarySearch] = useState('');
-
-  const audioRef = useRef<HTMLAudioElement>(null);
-  const [audioPreview, setAudioPreview] = useState<{ url: string; label: string } | null>(null);
-  const [isAudioPreviewLoading, setIsAudioPreviewLoading] = useState(false);
-
-  const groupsById = useMemo(() => {
-    const map = new Map<string, SoundGroup>();
-    (soundGroups || []).forEach((g) => map.set(g.id, g));
-    return map;
-  }, [soundGroups]);
-
-  const sortedGroups = useMemo(() => {
-    return [...(soundGroups || [])].sort((a, b) => (a.name || '').localeCompare(b.name || '', 'zh-Hans-CN'));
-  }, [soundGroups]);
-
-  const soundLibraryMapById = useMemo(() => {
-    const map = new Map<number, SoundLibraryItem>();
-    for (const s of soundLibrary || []) {
-      if (typeof s.id === 'number') map.set(s.id, s);
-    }
-    return map;
-  }, [soundLibrary]);
-
-  const soundLibraryMapByName = useMemo(() => {
-    const map = new Map<string, SoundLibraryItem>();
-    for (const s of soundLibrary || []) {
-      if (typeof s.name === 'string') map.set(s.name, s);
-    }
-    return map;
-  }, [soundLibrary]);
-
-  const filteredLibraryGroups = useMemo(() => {
-    const q = (librarySearch || '').trim().toLowerCase();
-    if (!q) return libraryGroups;
-    return libraryGroups.filter((g) => (g.name || '').toLowerCase().includes(q));
-  }, [librarySearch, libraryGroups]);
-
-  const insertOptions = useMemo(() => {
-    const opts: Array<{ value: string; label: string }> = [];
-    sortedGroups.forEach((g) => {
-      const kind = ((g.kind || 'expanded') as SoundGroupKind) === 'reaperSubproject' ? '（子工程）' : '';
-      opts.push({ value: `proj:${g.id}`, label: `${g.name}${kind}` });
-    });
-    filteredLibraryGroups.forEach((g) => {
-      opts.push({ value: `lib:${g.reaperFileName}`, label: `【库】${g.name}` });
-    });
-    return opts;
-  }, [sortedGroups, filteredLibraryGroups]);
-
-  const selectedInsert = useMemo(() => {
-    const value = (selectedInsertValue || '').trim();
-    if (!value) return null;
-    if (value.startsWith('proj:')) {
-      const id = value.slice('proj:'.length);
-      const g = groupsById.get(id);
-      return g ? ({ type: 'project' as const, group: g }) : null;
-    }
-    if (value.startsWith('lib:')) {
-      const fileName = value.slice('lib:'.length);
-      const entry = libraryGroups.find((x) => x.reaperFileName === fileName);
-      return entry ? ({ type: 'library' as const, entry }) : null;
-    }
-    return null;
-  }, [selectedInsertValue, groupsById, libraryGroups]);
-
-  const soundResults = useMemo(() => {
-    const q = (soundSearch || '').trim().toLowerCase();
-    if (!q) return [];
-    const max = 30;
-    const results: SoundLibraryItem[] = [];
-    for (const s of soundLibrary || []) {
-      const name = (s.name || '').toLowerCase();
-      if (!name.includes(q)) continue;
-      results.push(s);
-      if (results.length >= max) break;
-    }
-    return results;
-  }, [soundSearch, soundLibrary]);
+  const {
+    exportBasePath,
+    expectedPreviewWavFileName,
+    expectedReaperFileName,
+    groupsById,
+    insertOptions,
+    selectedInsert,
+    sortedGroups,
+    soundLibraryMapById,
+    soundLibraryMapByName,
+    soundResults,
+  } = useSoundGroupModalDerivedData({
+    soundGroups: soundGroups || [],
+    soundLibrary: soundLibrary || [],
+    libraryGroups,
+    librarySearch,
+    selectedInsertValue,
+    soundSearch,
+    draftName,
+    libraryBasePath,
+  });
+  const {
+    audioPreview,
+    audioRef,
+    handleAutofillDurationFromLibraryPreview,
+    handlePreviewLibraryWav,
+    handlePreviewSound,
+    isAudioPreviewLoading,
+    stopPreview,
+  } = useSoundGroupPreviewActions({
+    draftName,
+    libraryRootHandle,
+    setDraftDurationSeconds,
+  });
 
   const loadGroupIntoDraft = (groupId: string) => {
     const g = groupsById.get(groupId);
@@ -156,28 +110,11 @@ const SoundGroupModal: React.FC<SoundGroupModalProps> = ({
     }
 
     setDraftDurationSeconds(undefined);
-    setDraftClips(
-      (g.clips || []).map((c) => ({
-        soundId: c.soundId,
-        soundName: c.soundName,
-        offsetSeconds: typeof c.offsetSeconds === 'number' ? c.offsetSeconds : 0,
-      })),
-    );
+    setDraftClips(toDraftClips(g));
   };
 
   useEffect(() => {
     if (!isOpen) return;
-    void (async () => {
-      try {
-        const [handle, basePath] = await Promise.all([
-          sfxGroupLibraryRepository.getRootHandle(),
-          sfxGroupLibraryRepository.getBasePath(),
-        ]);
-        setLibraryRootHandle(handle);
-        setLibraryBasePath(basePath);
-      } catch {}
-    })();
-
     const firstProject = sortedGroups[0]?.id ? `proj:${sortedGroups[0].id}` : '';
     setSelectedInsertValue((prev) => prev || firstProject);
     if (editingGroupId === '__new__' && sortedGroups.length > 0) {
@@ -186,66 +123,6 @@ const SoundGroupModal: React.FC<SoundGroupModalProps> = ({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    if (!libraryRootHandle) return;
-
-    const scan = async () => {
-      setLibraryScanError(null);
-      setIsLibraryScanning(true);
-      try {
-        const ok = await ensureHandlePermission(libraryRootHandle as any, 'read', true);
-        if (!ok) throw new Error('缺少读取音效组库目录的权限');
-
-        const entries: LibraryGroupEntry[] = [];
-        for await (const entry of libraryRootHandle.values()) {
-          if (entry.kind !== 'file') continue;
-          const fileName = entry.name || '';
-          if (!fileName.toLowerCase().endsWith('.rpp')) continue;
-
-          const baseName = fileName.replace(/\.rpp$/i, '');
-          const previewName = `${baseName}_preview.wav`;
-
-          let previewWavFileName: string | undefined = undefined;
-          let durationSeconds: number | undefined = undefined;
-
-          try {
-            const previewHandle = await libraryRootHandle.getFileHandle(previewName, { create: false });
-            const previewFile = await previewHandle.getFile();
-            const meta = await mm.parseBlob(previewFile);
-            if (typeof meta.format.duration === 'number' && isFinite(meta.format.duration)) {
-              durationSeconds = meta.format.duration;
-            }
-            previewWavFileName = previewName;
-          } catch {
-            // preview is optional
-          }
-
-          entries.push({ name: baseName, reaperFileName: fileName, previewWavFileName, durationSeconds });
-        }
-
-        entries.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'zh-Hans-CN'));
-        setLibraryGroups(entries);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        setLibraryGroups([]);
-        setLibraryScanError(msg || '扫描失败');
-      } finally {
-        setIsLibraryScanning(false);
-      }
-    };
-
-    void scan();
-  }, [isOpen, libraryRootHandle]);
-
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    if (!audioPreview) return;
-    audio.src = audioPreview.url;
-    audio.play().catch(() => {});
-  }, [audioPreview]);
 
   if (!isOpen) return null;
 
@@ -264,155 +141,13 @@ const SoundGroupModal: React.FC<SoundGroupModalProps> = ({
     setDraftClips((prev) => [...prev, { soundId: sound.id, soundName: sound.name, offsetSeconds: 0 }]);
   };
 
-  const stopPreview = () => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    try {
-      audio.pause();
-      audio.removeAttribute('src');
-    } catch {}
-    if (audioPreview?.url) {
-      try {
-        URL.revokeObjectURL(audioPreview.url);
-      } catch {}
-    }
-    setAudioPreview(null);
-  };
-
-  const handleSelectLibraryDirectory = async () => {
-    try {
-      const picker = (window as any).showDirectoryPicker as undefined | (() => Promise<FileSystemDirectoryHandle>);
-      if (typeof picker !== 'function') {
-        alert('当前环境不支持选择文件夹（showDirectoryPicker）。');
-        return;
-      }
-      const handle = await picker();
-      if (!handle || handle.kind !== 'directory') return;
-      const ok = await ensureHandlePermission(handle as any, 'read', true);
-      if (!ok) {
-        alert('需要授权读取该文件夹权限，才能扫描/试听音效组库。');
-        return;
-      }
-      await sfxGroupLibraryRepository.saveRootHandle(handle);
-      setLibraryRootHandle(handle);
-      setLibraryScanError(null);
-    } catch (e) {
-      if (e instanceof Error && e.name === 'AbortError') return;
-      const msg = e instanceof Error ? e.message : String(e);
-      alert(`选择音效组库目录失败：${msg}`);
-    }
-  };
-
-  const handleClearLibraryDirectory = async () => {
-    const ok = window.confirm('确认清除已关联的音效组库目录？（不会删除磁盘文件）');
-    if (!ok) return;
-    try {
-      await sfxGroupLibraryRepository.clearRootHandle();
-    } catch {}
-    setLibraryRootHandle(null);
-    setLibraryGroups([]);
-    setLibraryScanError(null);
-  };
-
-  const handleSaveLibraryBasePath = async () => {
-    const p = (libraryBasePath || '').trim();
-    try {
-      await sfxGroupLibraryRepository.saveBasePath(p);
-      setLibraryBasePath(p);
-      alert('已保存音效组库绝对路径。');
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      alert(`保存失败：${msg}`);
-    }
-  };
-
-  const playFileAsPreview = async (file: File, label: string) => {
-    stopPreview();
-    setIsAudioPreviewLoading(true);
-    try {
-      const url = URL.createObjectURL(file);
-      setAudioPreview({ url, label });
-    } finally {
-      setIsAudioPreviewLoading(false);
-    }
-  };
-
-  const handlePreviewLibraryWav = async (previewWavFileName: string, label: string) => {
-    if (!libraryRootHandle) {
-      alert('尚未选择音效组库目录（用于读取预览 wav）。');
-      return;
-    }
-    setIsAudioPreviewLoading(true);
-    try {
-      const ok = await ensureHandlePermission(libraryRootHandle as any, 'read', true);
-      if (!ok) throw new Error('缺少读取音效组库目录的权限');
-      const fh = await libraryRootHandle.getFileHandle(previewWavFileName, { create: false });
-      const f = await fh.getFile();
-      await playFileAsPreview(f, label);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      alert(`无法播放预览文件：${msg}`);
-    } finally {
-      setIsAudioPreviewLoading(false);
-    }
-  };
-
-  const handleAutofillDurationFromLibraryPreview = async () => {
-    const name = (draftName || '').trim();
-    if (!name) {
-      alert('请先填写音效组名称。');
-      return;
-    }
-    if (!libraryRootHandle) {
-      alert('尚未选择音效组库目录（用于读取预览 wav）。');
-      return;
-    }
-    setIsAudioPreviewLoading(true);
-    try {
-      const ok = await ensureHandlePermission(libraryRootHandle as any, 'read', true);
-      if (!ok) throw new Error('缺少读取音效组库目录的权限');
-      const previewName = `${name}_preview.wav`;
-      const previewHandle = await libraryRootHandle.getFileHandle(previewName, { create: false });
-      const previewFile = await previewHandle.getFile();
-      const meta = await mm.parseBlob(previewFile);
-      if (typeof meta.format.duration === 'number' && isFinite(meta.format.duration)) {
-        setDraftDurationSeconds(meta.format.duration);
-      } else {
-        alert('未能从预览文件读取到时长（可能是格式不支持或文件损坏）。');
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      alert(`读取预览时长失败：${msg}`);
-    } finally {
-      setIsAudioPreviewLoading(false);
-    }
-  };
-
-  const handlePreviewSound = async (sound: SoundLibraryItem) => {
-    if (!sound.id) return;
-    setIsAudioPreviewLoading(true);
-    try {
-      const file = await soundLibraryRepository.getSoundFile(sound, {
-        requestPermission: true,
-        allowRootResolve: true,
-      });
-      const label = getSoundFileNameFromSoundName(sound.name) ?? sound.name;
-      await playFileAsPreview(file, label);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      alert(`无法预览该音效：${msg}`);
-    } finally {
-      setIsAudioPreviewLoading(false);
-    }
-  };
-
   const handleSaveGroup = () => {
     const name = (draftName || '').trim();
     if (!name) {
       alert('请输入音效组名称，例如：进厨房');
       return;
     }
-    const id = editingGroupId === '__new__' ? createGroupId() : editingGroupId;
+    const id = editingGroupId === '__new__' ? createSoundGroupId() : editingGroupId;
 
     if (draftKind === 'reaperSubproject') {
       onUpsertGroup({
@@ -487,7 +222,7 @@ const SoundGroupModal: React.FC<SoundGroupModalProps> = ({
           ((g.kind || 'expanded') as SoundGroupKind) === 'reaperSubproject' &&
           (g.reaperFileName || '') === entry.reaperFileName,
       );
-      const id = existing?.id || createGroupId();
+      const id = existing?.id || createSoundGroupId();
       const group: SoundGroup = {
         id,
         name: entry.name,
@@ -513,18 +248,6 @@ const SoundGroupModal: React.FC<SoundGroupModalProps> = ({
     const byName = clip.soundName ? soundLibraryMapByName.get(clip.soundName) : undefined;
     return renderSoundLabel(byId?.name || byName?.name || clip.soundName);
   };
-
-  const expectedReaperFileName = (() => {
-    const n = (draftName || '').trim();
-    return n ? `${n}.rpp` : '';
-  })();
-
-  const expectedPreviewWavFileName = (() => {
-    const n = (draftName || '').trim();
-    return n ? `${n}_preview.wav` : '';
-  })();
-
-  const exportBasePath = (libraryBasePath || '').trim();
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-[70] p-4">

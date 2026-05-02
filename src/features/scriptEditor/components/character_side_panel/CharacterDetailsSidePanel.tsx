@@ -36,6 +36,15 @@ const CharacterDetailsSidePanel: React.FC<CharacterDetailsSidePanelProps> = ({
   const { undoableProjectUpdate, characters: contextCharacters } = useEditorContext();
   const [isBatchReassignOpen, setIsBatchReassignOpen] = useState(false);
   const [isFixUnassignedOpen, setIsFixUnassignedOpen] = useState(false);
+  const profileRows = [
+    ['年龄/年龄段', character?.profile?.age],
+    ['性别', character?.profile?.gender],
+    ['身份/职业', character?.profile?.occupation],
+    ['性格', character?.profile?.personality],
+    ['声线建议', character?.profile?.voiceDirection],
+    ['人物关系', character?.profile?.relationships],
+    ['其他', character?.profile?.notes],
+  ].filter(([, value]) => typeof value === 'string' && value.trim() !== '');
 
   const characterAppearances = useMemo((): CharacterAppearance[] => {
     if (!character || !project || !project.chapters) return [];
@@ -242,6 +251,22 @@ const CharacterDetailsSidePanel: React.FC<CharacterDetailsSidePanelProps> = ({
                {character.isStyleLockedToCv && <span className="ml-2 text-xs text-amber-400">(独立样式)</span>}
             </div>
           </div>
+        </section>
+
+        <section>
+          <h3 className="text-lg font-medium text-slate-300 mb-2.5">角色描述</h3>
+          {profileRows.length > 0 ? (
+            <div className="space-y-2 text-sm">
+              {profileRows.map(([label, value]) => (
+                <p key={label}>
+                  <strong className="text-slate-400">{label}:</strong>{' '}
+                  <span className="text-slate-100 whitespace-pre-wrap">{value}</span>
+                </p>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-slate-400">暂无 AI 角色描述，可在角色列表点击闪光按钮生成。</p>
+          )}
         </section>
 
         <section>

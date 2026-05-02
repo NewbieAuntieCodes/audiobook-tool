@@ -8,6 +8,7 @@ interface UseChapterActionsProps {
   paginatedChapters: Chapter[];
   isLoadingAiAnnotation: boolean;
   isLoadingImportAnnotation: boolean;
+  isLocalCodexTaskRunning: boolean;
   isLoadingManualParse: boolean;
   onRunAiAnnotationForChapters: (chapterIds: string[]) => Promise<void>;
   onRunManualParseForChapters: (chapterIds: string[]) => Promise<void>;
@@ -21,6 +22,7 @@ export const useChapterActions = ({
   paginatedChapters,
   isLoadingAiAnnotation,
   isLoadingImportAnnotation,
+  isLocalCodexTaskRunning,
   isLoadingManualParse,
   onRunAiAnnotationForChapters,
   onRunManualParseForChapters,
@@ -30,6 +32,11 @@ export const useChapterActions = ({
   const isAnyOperationLoading = useMemo(() => 
     isLoadingAiAnnotation || isLoadingImportAnnotation || isLoadingManualParse,
     [isLoadingAiAnnotation, isLoadingImportAnnotation, isLoadingManualParse]
+  );
+
+  const isActionControlsDisabled = useMemo(
+    () => isAnyOperationLoading || isLocalCodexTaskRunning,
+    [isAnyOperationLoading, isLocalCodexTaskRunning]
   );
   
   const getChapterIdsForProcessing = useCallback(() => {
@@ -66,7 +73,7 @@ export const useChapterActions = ({
   }, [multiSelectedChapterIds.length, isLoadingAiAnnotation, isLoadingManualParse]);
 
   const isProcessingDisabled = useCallback((forOperation: 'ai' | 'manual' | 'import') => {
-    if (isAnyOperationLoading) return true;
+    if (isActionControlsDisabled) return true;
     
     const chapterIds = getChapterIdsForProcessing();
     if (chapterIds.length === 0) return true;
@@ -82,7 +89,7 @@ export const useChapterActions = ({
     // Existing logic for AI and Manual parsing. They operate on rawContent.
     return !chaptersToProcess || chaptersToProcess.some(ch => !ch.rawContent || ch.rawContent.trim() === '');
 
-  }, [isAnyOperationLoading, getChapterIdsForProcessing, currentProject]);
+  }, [isActionControlsDisabled, getChapterIdsForProcessing, currentProject]);
 
   return {
     handleAiAnnotationClick,
@@ -91,5 +98,6 @@ export const useChapterActions = ({
     getAnnotationButtonText,
     isProcessingDisabled,
     isAnyOperationLoading,
+    isActionControlsDisabled,
   };
 };

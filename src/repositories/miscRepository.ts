@@ -10,7 +10,12 @@
 import { db, MiscData } from '../db';
 import { MergeHistoryEntry, PresetColor, AudioAssistantState, DirectoryHandleEntry } from '../types';
 // FIX: The ApiSettings interface was outdated. Imported the correct, comprehensive interface from uiSlice to ensure type consistency for API settings across the app.
-import { type ApiSettings } from '../store/slices/uiSlice';
+import {
+  type ApiSettings,
+  type LocalCodexSettings,
+  defaultLocalCodexSettings,
+  normalizeLocalCodexSettings,
+} from '../store/slices/uiSlice';
 export type { ApiSettings };
 
 
@@ -163,6 +168,7 @@ export class MiscRepository {
         openai: { apiKey: '', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4-turbo' },
         moonshot: { apiKey: '', baseUrl: 'https://api.moonshot.cn/v1', model: 'moonshot-v1-8k' },
         deepseek: { apiKey: '', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+        codex: { apiKey: '', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4' },
     };
   }
 
@@ -171,6 +177,21 @@ export class MiscRepository {
    */
   async saveApiSettings(settings: ApiSettings): Promise<void> {
     await this.setRaw('apiSettings', settings);
+  }
+
+  /**
+   * 获取本地 Codex 画本配置
+   */
+  async getLocalCodexSettings(): Promise<LocalCodexSettings> {
+    const settings = await this.getRaw<LocalCodexSettings>('localCodexSettings');
+    return settings ? normalizeLocalCodexSettings(settings) : defaultLocalCodexSettings;
+  }
+
+  /**
+   * 保存本地 Codex 画本配置
+   */
+  async saveLocalCodexSettings(settings: LocalCodexSettings): Promise<void> {
+    await this.setRaw('localCodexSettings', normalizeLocalCodexSettings(settings));
   }
 
   /**
@@ -295,6 +316,7 @@ export class MiscRepository {
     cvColorPresets: PresetColor[];
     characterColorPresets: PresetColor[];
     apiSettings: ApiSettings;
+    localCodexSettings: LocalCodexSettings;
     selectedAiProvider: string;
     characterShortcuts: CharacterShortcuts;
     soundObservationList: string[];
@@ -306,6 +328,7 @@ export class MiscRepository {
         cvColorPresets,
         characterColorPresets,
         apiSettings,
+        localCodexSettings,
         selectedAiProvider,
         characterShortcuts,
         soundObservationList,
@@ -315,6 +338,7 @@ export class MiscRepository {
         this.getCvColorPresets(),
         this.getCharacterColorPresets(),
         this.getApiSettings(),
+        this.getLocalCodexSettings(),
         this.getSelectedAiProvider(),
         this.getCharacterShortcuts(),
         this.getSoundObservationList(),
@@ -326,6 +350,7 @@ export class MiscRepository {
         cvColorPresets,
         characterColorPresets,
         apiSettings,
+        localCodexSettings,
         selectedAiProvider,
         characterShortcuts,
         soundObservationList,

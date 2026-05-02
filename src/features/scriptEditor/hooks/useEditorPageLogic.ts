@@ -9,6 +9,7 @@ import { useAiChapterAnnotator } from './useAiChapterAnnotator';
 import { useManualChapterParser } from './useManualChapterParser';
 import { useAnnotationImporter } from './useAnnotationImporter';
 import { useCharacterSidePanel } from './useCharacterSidePanel';
+import { useDeepSeekCharacterProfile } from './useDeepSeekCharacterProfile';
 
 // Context
 import { EditorContextType } from '../contexts/EditorContext';
@@ -16,6 +17,10 @@ import { EditorContextType } from '../contexts/EditorContext';
 // Utils
 import { parseImportedScriptToChapters } from '../../../lib/scriptImporter';
 import { parseHtmlWorkbook } from '../../../lib/htmlScriptParser';
+import {
+  logLocalCodexPerf,
+  startLocalCodexPerfSpan,
+} from '../../../lib/localCodexPerfDebug';
 import useStore from '../../../store/useStore';
 
 interface EditorPageProps {
@@ -23,7 +28,7 @@ interface EditorPageProps {
   projects: Project[];
   characters: Character[];
   onProjectUpdate: (project: Project) => void;
-  onAddCharacter: (characterData: Pick<Character, 'name' | 'color' | 'textColor' | 'cvName' | 'description' | 'isStyleLockedToCv'>, projectId: string) => Character;
+  onAddCharacter: (characterData: Pick<Character, 'name' | 'color' | 'textColor' | 'cvName' | 'description' | 'profile' | 'isStyleLockedToCv'>, projectId: string) => Character;
   onOpenCharacterAndCvStyleModal: (character: Character | null) => void;
   onEditCharacter: (characterBeingEdited: Character, updatedCvName?: string, updatedCvBgColor?: string, updatedCvTextColor?: string) => Promise<void>;
 }
@@ -39,16 +44,16 @@ export const useEditorPageLogic = (props: EditorPageProps) => {
     onEditCharacter,
   } = props;
 
-  const { openConfirmModal, soundLibrary, soundObservationList, addIgnoredSoundKeyword } = useStore(state => ({
+  const { openConfirmModal, soundLibrary, soundObservationList, addIgnoredSoundKeyword, bulkAssignCvToCharacters } = useStore(state => ({
     openConfirmModal: state.openConfirmModal,
     soundLibrary: state.soundLibrary,
     soundObservationList: state.soundObservationList,
     addIgnoredSoundKeyword: state.addIgnoredSoundKeyword,
+    bulkAssignCvToCharacters: state.bulkAssignCvToCharacters,
   }));
   const coreLogic = useEnhancedEditorCoreLogic({ projectId, projects, onProjectUpdate });
   const { currentProject, selectedChapterId, multiSelectedChapterIds, setMultiSelectedChapterIds, applyUndoableProjectUpdate } = coreLogic;
   const scriptImportInputRef = useRef<HTMLInputElement>(null);
-  const [shortcutActiveLineId, setShortcutActiveLineId] = useState<string | null>(null);
   const openShortcutSettingsModal = useStore(state => state.openShortcutSettingsModal);
 
   const { projectCharacters, allCvNames, cvStyles } = useMemo(() => {
@@ -58,7 +63,7 @@ export const useEditorPageLogic = (props: EditorPageProps) => {
     return { projectCharacters: projChars, allCvNames: cvs, cvStyles: styles };
   }, [characters, projectId, currentProject]);
 
-  const handleAddCharacterForProject = useCallback((charData: Pick<Character, 'name' | 'color' | 'textColor' | 'cvName' | 'description' | 'isStyleLockedToCv'>) => {
+  const handleAddCharacterForProject = useCallback((charData: Pick<Character, 'name' | 'color' | 'textColor' | 'cvName' | 'description' | 'profile' | 'isStyleLockedToCv'>) => {
     return onAddCharacter(charData, projectId);
   }, [onAddCharacter, projectId]);
 
@@ -81,50 +86,188 @@ export const useEditorPageLogic = (props: EditorPageProps) => {
 
   const { isLoadingAiAnnotation, handleRunAiAnnotationForChapters } = useAiChapterAnnotator({ currentProject, onAddCharacter: handleAddCharacterForProject, applyUndoableProjectUpdate, setMultiSelectedChapterIdsAfterProcessing });
   const { isLoadingManualParse, handleManualParseChapters } = useManualChapterParser({ currentProject, characters: projectCharacters, onAddCharacter: handleAddCharacterForProject, applyUndoableProjectUpdate, setMultiSelectedChapterIdsAfterProcessing });
-  const { isLoadingImportAnnotation, isImportModalOpen, setIsImportModalOpen, handleOpenImportModalTrigger, handleImportPreAnnotatedScript } = useAnnotationImporter({ currentProject, onAddCharacter: handleAddCharacterForProject, applyUndoableProjectUpdate, selectedChapterId, multiSelectedChapterIds, setMultiSelectedChapterIdsAfterProcessing });
+  const {
+    isLoadingImportAnnotation,
+    isImportModalOpen,
+    isLocalCodexTaskRunning,
+    localCodexTaskStatus,
+    dismissLocalCodexTaskStatus,
+    cancelLocalCodexTask,
+    resumeLocalCodexTask,
+    setIsImportModalOpen,
+    handleOpenImportModalTrigger,
+    handleImportPreAnnotatedScript,
+    handleAutoImportWithCodex,
+    handleAutoImportWithDeepSeek,
+    handleAutoImportWithLocalCodex,
+  } = useAnnotationImporter({ currentProject, onAddCharacter: handleAddCharacterForProject, applyUndoableProjectUpdate, selectedChapterId, multiSelectedChapterIds, setMultiSelectedChapterIdsAfterProcessing });
   const { handleUpdateScriptLineText, handleAssignCharacterToLine, handleSplitScriptLine, handleMergeAdjacentLines, handleDeleteScriptLine, handleUpdateSoundType } = useScriptLineEditor(currentProject, projectCharacters, applyUndoableProjectUpdate, selectedChapterId);
   
-  // FIX: Define the handleImportAndCvUpdate function to resolve the "shorthand property" error.
+  const applyCharacterCvUpdates = useCallback(async (charactersWithCvToUpdate: Map<string, string>) => {
+    const finishPerf = startLocalCodexPerfSpan('useEditorPageLogic.applyCharacterCvUpdates', {
+      projectId: currentProject?.id || '',
+      incomingCharacterCount: charactersWithCvToUpdate.size,
+    });
+    if (!currentProject || charactersWithCvToUpdate.size === 0) {
+      finishPerf({
+        skipped: true,
+        reason: !currentProject ? 'missing_project' : 'empty_assignments',
+      });
+      return;
+    }
+
+    const { characters, projects } = useStore.getState();
+    const project = projects.find(p => p.id === currentProject.id);
+    const projectCvStyles = project?.cvStyles || {};
+    const finishBuildAssignmentsPerf = startLocalCodexPerfSpan(
+      'useEditorPageLogic.applyCharacterCvUpdates.buildAssignments',
+      {
+        projectId: currentProject.id,
+        incomingCharacterCount: charactersWithCvToUpdate.size,
+      }
+    );
+    const assignments = Array.from(charactersWithCvToUpdate.entries())
+      .map(([charId, cvName]) => {
+        const charToUpdate = characters.find(c => c.id === charId);
+        if (!charToUpdate) return null;
+
+        const style = projectCvStyles[cvName] || {
+          bgColor: 'bg-slate-700',
+          textColor: 'text-slate-300',
+        };
+
+        return {
+          characterId: charId,
+          cvName,
+          bgColor: style.bgColor,
+          textColor: style.textColor,
+        };
+      })
+      .filter(
+        (
+          item
+        ): item is {
+          characterId: string;
+          cvName: string;
+          bgColor: string;
+          textColor: string;
+        } => !!item
+      );
+    finishBuildAssignmentsPerf({
+      assignmentCount: assignments.length,
+    });
+
+    if (assignments.length === 0) {
+      finishPerf({
+        skipped: true,
+        reason: 'no_valid_assignments',
+      });
+      return;
+    }
+
+    const finishBulkAssignPerf = startLocalCodexPerfSpan(
+      'useEditorPageLogic.applyCharacterCvUpdates.bulkAssignCvToCharacters',
+      {
+        projectId: currentProject.id,
+        assignmentCount: assignments.length,
+      }
+    );
+    await bulkAssignCvToCharacters(currentProject.id, assignments);
+    finishBulkAssignPerf({
+      assignmentCount: assignments.length,
+    });
+    finishPerf({
+      assignmentCount: assignments.length,
+    });
+  }, [bulkAssignCvToCharacters, currentProject]);
+
   const handleImportAndCvUpdate = useCallback(async (annotatedText: string) => {
     const charactersWithCvToUpdate = await handleImportPreAnnotatedScript(annotatedText);
+    await applyCharacterCvUpdates(charactersWithCvToUpdate);
+  }, [applyCharacterCvUpdates, handleImportPreAnnotatedScript]);
 
-    if (charactersWithCvToUpdate.size > 0) {
-        const { characters, projects, selectedProjectId } = useStore.getState();
-        const project = projects.find(p => p.id === selectedProjectId);
-        const projectCvStyles = project?.cvStyles || {};
+  const handleAutoImportWithCodexAndCvUpdate = useCallback(async () => {
+    const charactersWithCvToUpdate = await handleAutoImportWithCodex();
+    await applyCharacterCvUpdates(charactersWithCvToUpdate);
+  }, [applyCharacterCvUpdates, handleAutoImportWithCodex]);
 
-        for (const [charId, cvName] of charactersWithCvToUpdate.entries()) {
-            const charToUpdate = characters.find(c => c.id === charId);
-            if (charToUpdate) {
-                const style = projectCvStyles[cvName] || { bgColor: 'bg-slate-700', textColor: 'text-slate-300' };
-                await onEditCharacter(charToUpdate, cvName, style.bgColor, style.textColor);
-            }
-        }
-    }
-  }, [handleImportPreAnnotatedScript, onEditCharacter]);
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const isModalOpen = useStore.getState().isShortcutSettingsModalOpen;
-      if (!shortcutActiveLineId || isModalOpen) return;
-      const key = e.key.toLowerCase();
-      const shortcuts = useStore.getState().characterShortcuts;
-      if (shortcuts && shortcuts[key] !== undefined) {
-        const characterId = shortcuts[key];
-        const project = useStore.getState().projects.find(p => p.id === projectId);
-        const chapter = project?.chapters.find(ch => ch.scriptLines.some(l => l.id === shortcutActiveLineId));
-        if (chapter) {
-          handleAssignCharacterToLine(chapter.id, shortcutActiveLineId, characterId);
-        }
-        e.preventDefault();
+  const handleAutoImportWithLocalCodexAndCvUpdate = useCallback(async () => {
+    const finishPerf = startLocalCodexPerfSpan(
+      'useEditorPageLogic.handleAutoImportWithLocalCodexAndCvUpdate'
+    );
+    logLocalCodexPerf(
+      'useEditorPageLogic.handleAutoImportWithLocalCodexAndCvUpdate.beforeHandleAutoImportWithLocalCodex'
+    );
+    const charactersWithCvToUpdate = await handleAutoImportWithLocalCodex();
+    logLocalCodexPerf(
+      'useEditorPageLogic.handleAutoImportWithLocalCodexAndCvUpdate.afterHandleAutoImportWithLocalCodex',
+      {
+        charactersWithCvToUpdateCount: charactersWithCvToUpdate.size,
       }
-      setShortcutActiveLineId(null);
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [shortcutActiveLineId, handleAssignCharacterToLine, projectId]);
+    );
+    logLocalCodexPerf(
+      'useEditorPageLogic.handleAutoImportWithLocalCodexAndCvUpdate.beforeApplyCharacterCvUpdates',
+      {
+        charactersWithCvToUpdateCount: charactersWithCvToUpdate.size,
+      }
+    );
+    await applyCharacterCvUpdates(charactersWithCvToUpdate);
+    logLocalCodexPerf(
+      'useEditorPageLogic.handleAutoImportWithLocalCodexAndCvUpdate.afterApplyCharacterCvUpdates',
+      {
+        charactersWithCvToUpdateCount: charactersWithCvToUpdate.size,
+      }
+    );
+    finishPerf({
+      charactersWithCvToUpdateCount: charactersWithCvToUpdate.size,
+    });
+  }, [applyCharacterCvUpdates, handleAutoImportWithLocalCodex]);
+
+  const handleAutoImportWithDeepSeekAndCvUpdate = useCallback(async (mode: 'flash' | 'pro') => {
+    const charactersWithCvToUpdate = await handleAutoImportWithDeepSeek(mode);
+    await applyCharacterCvUpdates(charactersWithCvToUpdate);
+  }, [applyCharacterCvUpdates, handleAutoImportWithDeepSeek]);
+
+  const handleResumeLocalCodexTaskAndCvUpdate = useCallback(async () => {
+    const finishPerf = startLocalCodexPerfSpan(
+      'useEditorPageLogic.handleResumeLocalCodexTaskAndCvUpdate'
+    );
+    logLocalCodexPerf(
+      'useEditorPageLogic.handleResumeLocalCodexTaskAndCvUpdate.beforeResumeLocalCodexTask'
+    );
+    const charactersWithCvToUpdate = await resumeLocalCodexTask();
+    logLocalCodexPerf(
+      'useEditorPageLogic.handleResumeLocalCodexTaskAndCvUpdate.afterResumeLocalCodexTask',
+      {
+        charactersWithCvToUpdateCount: charactersWithCvToUpdate.size,
+      }
+    );
+    logLocalCodexPerf(
+      'useEditorPageLogic.handleResumeLocalCodexTaskAndCvUpdate.beforeApplyCharacterCvUpdates',
+      {
+        charactersWithCvToUpdateCount: charactersWithCvToUpdate.size,
+      }
+    );
+    await applyCharacterCvUpdates(charactersWithCvToUpdate);
+    logLocalCodexPerf(
+      'useEditorPageLogic.handleResumeLocalCodexTaskAndCvUpdate.afterApplyCharacterCvUpdates',
+      {
+        charactersWithCvToUpdateCount: charactersWithCvToUpdate.size,
+      }
+    );
+    finishPerf({
+      charactersWithCvToUpdateCount: charactersWithCvToUpdate.size,
+    });
+  }, [applyCharacterCvUpdates, resumeLocalCodexTask]);
 
   const { characterForSidePanel, handleOpenCharacterSidePanel, handleCloseCharacterSidePanel } = useCharacterSidePanel(projectCharacters);
+  const {
+    characterProfileGenerationId,
+    generateCharacterProfileWithDeepSeek,
+  } = useDeepSeekCharacterProfile({
+    currentProject,
+    characters: projectCharacters,
+  });
   const [isAddChaptersModalOpen, setIsAddChaptersModalOpen] = useState(false);
 
   const handleOpenScriptImport = useCallback(async () => {
@@ -356,7 +499,21 @@ export const useEditorPageLogic = (props: EditorPageProps) => {
   }, [applyUndoableProjectUpdate]);
   
   const contextValue = useMemo<EditorContextType>(() => ({
-    ...coreLogic,
+    currentProject,
+    selectedChapterId,
+    setSelectedChapterId: coreLogic.setSelectedChapterId,
+    multiSelectedChapterIds,
+    setMultiSelectedChapterIds,
+    selectedLineForPlayback: coreLogic.selectedLineForPlayback,
+    setSelectedLineForPlayback: coreLogic.setSelectedLineForPlayback,
+    characterFilterMode: coreLogic.characterFilterMode,
+    setCharacterFilterMode: coreLogic.setCharacterFilterMode,
+    cvFilter: coreLogic.cvFilter,
+    setCvFilter: coreLogic.setCvFilter,
+    undo: coreLogic.undo,
+    redo: coreLogic.redo,
+    canUndo: coreLogic.canUndo,
+    canRedo: coreLogic.canRedo,
     characters: projectCharacters,
     allCvNames,
     cvStyles,
@@ -371,6 +528,11 @@ export const useEditorPageLogic = (props: EditorPageProps) => {
     isLoadingAiAnnotation,
     isLoadingManualParse,
     isLoadingImportAnnotation,
+    isLocalCodexTaskRunning,
+    localCodexTaskStatus,
+    cancelLocalCodexTask,
+    resumeLocalCodexTask: handleResumeLocalCodexTaskAndCvUpdate,
+    dismissLocalCodexTaskStatus,
     runAiAnnotationForChapters: handleRunAiAnnotationForChapters,
     runManualParseForChapters: handleManualParseChapters,
     openImportModal: handleOpenImportModalTrigger,
@@ -378,19 +540,19 @@ export const useEditorPageLogic = (props: EditorPageProps) => {
     openScriptImport: handleOpenScriptImport,
     saveNewChapters: handleSaveNewChapters,
     openShortcutSettingsModal,
-    shortcutActiveLineId,
-    setShortcutActiveLineId,
     addCustomSoundType: handleAddCustomSoundType,
     deleteCustomSoundType: handleDeleteCustomSoundType,
     addIgnoredSoundKeyword,
     openCharacterSidePanel: handleOpenCharacterSidePanel,
     openCvModal: onOpenCharacterAndCvStyleModal,
     openCharacterEditModal: onOpenCharacterAndCvStyleModal,
+    generateCharacterProfileWithDeepSeek,
+    characterProfileGenerationId,
     soundLibrary,
     soundObservationList,
     handlePinSound,
     splitChapterAtLine: coreLogic.splitChapterAtLine,
-  }), [coreLogic, projectCharacters, allCvNames, cvStyles, applyUndoableProjectUpdate, deleteChapters, undoableMergeChapters, handleBatchAddChapters, isLoadingAiAnnotation, isLoadingManualParse, isLoadingImportAnnotation, handleRunAiAnnotationForChapters, handleManualParseChapters, handleOpenImportModalTrigger, handleOpenScriptImport, handleSaveNewChapters, openShortcutSettingsModal, shortcutActiveLineId, handleAddCustomSoundType, handleDeleteCustomSoundType, addIgnoredSoundKeyword, handleOpenCharacterSidePanel, onOpenCharacterAndCvStyleModal, soundLibrary, soundObservationList, handlePinSound]);
+  }), [currentProject, selectedChapterId, multiSelectedChapterIds, setMultiSelectedChapterIds, coreLogic.setSelectedChapterId, coreLogic.selectedLineForPlayback, coreLogic.setSelectedLineForPlayback, coreLogic.characterFilterMode, coreLogic.setCharacterFilterMode, coreLogic.cvFilter, coreLogic.setCvFilter, coreLogic.undo, coreLogic.redo, coreLogic.canUndo, coreLogic.canRedo, projectCharacters, allCvNames, cvStyles, applyUndoableProjectUpdate, deleteChapters, undoableMergeChapters, handleBatchAddChapters, isLoadingAiAnnotation, isLoadingManualParse, isLoadingImportAnnotation, isLocalCodexTaskRunning, localCodexTaskStatus, cancelLocalCodexTask, handleResumeLocalCodexTaskAndCvUpdate, dismissLocalCodexTaskStatus, handleRunAiAnnotationForChapters, handleManualParseChapters, handleOpenImportModalTrigger, handleOpenScriptImport, handleSaveNewChapters, openShortcutSettingsModal, handleAddCustomSoundType, handleDeleteCustomSoundType, addIgnoredSoundKeyword, handleOpenCharacterSidePanel, onOpenCharacterAndCvStyleModal, generateCharacterProfileWithDeepSeek, characterProfileGenerationId, soundLibrary, soundObservationList, handlePinSound, coreLogic.parseProjectChaptersAndUpdateHistory, coreLogic.updateChapterTitleInHistory, coreLogic.undoableUpdateChapterRawContent, coreLogic.insertChapterAfter, coreLogic.splitChapterAtLine]);
 
   return {
     contextValue,
@@ -403,7 +565,15 @@ export const useEditorPageLogic = (props: EditorPageProps) => {
     handleSaveNewChapters,
     scriptImportInputRef,
     isImportModalOpen,
+    isLocalCodexTaskRunning,
+    localCodexTaskStatus,
+    dismissLocalCodexTaskStatus,
+    cancelLocalCodexTask,
+    handleResumeLocalCodexTaskAndCvUpdate,
     setIsImportModalOpen,
     handleImportAndCvUpdate,
+    handleAutoImportWithCodexAndCvUpdate,
+    handleAutoImportWithDeepSeekAndCvUpdate,
+    handleAutoImportWithLocalCodexAndCvUpdate,
   };
 };

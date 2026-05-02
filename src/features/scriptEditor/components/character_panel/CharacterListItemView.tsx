@@ -3,7 +3,7 @@ import { Character } from '../../../../types';
 // Fix: Import from types.ts to break circular dependency
 import { CVStylesMap } from '../../../../types';
 import { isHexColor, getContrastingTextColor } from '../../../../lib/colorUtils';
-import { UserCircleIcon, InformationCircleIcon, PencilIcon, TrashIcon } from '../../../../components/ui/icons';
+import { UserCircleIcon, InformationCircleIcon, PencilIcon, TrashIcon, SparklesIcon } from '../../../../components/ui/icons';
 
 interface CharacterListItemViewProps {
   character: Character;
@@ -11,10 +11,35 @@ interface CharacterListItemViewProps {
   onOpenCvModal: (character: Character) => void; // This will now open the unified modal
   onOpenCharacterSidePanel: (character: Character) => void;
   onEditCharacter: (character: Character | null) => void; // This will also open the unified modal
+  onGenerateAiProfile: (character: Character) => void;
   onDeleteCharacter: (characterId: string) => void;
+  isGeneratingAiProfile: boolean;
   isSelectedForMerge: boolean;
   onToggleSelectForMerge: (characterId: string) => void;
 }
+
+const getProfileSummary = (character: Character) => {
+  const parts = [
+    character.profile?.gender,
+    character.profile?.age,
+    character.profile?.occupation,
+  ]
+    .map((value) => (value || '').trim())
+    .filter(Boolean);
+
+  return parts.length > 0 ? parts.join('｜') : '';
+};
+
+const profileRows = (character: Character) =>
+  [
+    ['年龄/年龄段', character.profile?.age],
+    ['性别', character.profile?.gender],
+    ['身份/职业', character.profile?.occupation],
+    ['性格', character.profile?.personality],
+    ['声线建议', character.profile?.voiceDirection],
+    ['人物关系', character.profile?.relationships],
+    ['其他', character.profile?.notes],
+  ].filter(([, value]) => typeof value === 'string' && value.trim() !== '');
 
 const CharacterListItemView: React.FC<CharacterListItemViewProps> = ({
   character,
@@ -22,7 +47,9 @@ const CharacterListItemView: React.FC<CharacterListItemViewProps> = ({
   onOpenCvModal, 
   onOpenCharacterSidePanel,
   onEditCharacter, 
+  onGenerateAiProfile,
   onDeleteCharacter,
+  isGeneratingAiProfile,
   isSelectedForMerge,
   onToggleSelectForMerge,
 }) => {
@@ -77,6 +104,9 @@ const CharacterListItemView: React.FC<CharacterListItemViewProps> = ({
      finalCvTextClass = defaultCvButtonTextColorClass;
   }
 
+  const profileSummary = getProfileSummary(character);
+  const visibleDescription = profileSummary || character.description || '';
+  const cardRows = profileRows(character);
 
   return (
     <div
@@ -107,21 +137,51 @@ const CharacterListItemView: React.FC<CharacterListItemViewProps> = ({
         </button>
       </div>
 
-      {/* Col 3: Character Bar (without description) */}
-      <div
-        className={`p-2 rounded-md flex items-center ${charBgClass} ${charTextClass} gap-x-2 min-w-0 h-9 text-sm`}
-        style={{ ...charBgStyle, ...charTextStyle }}
-      >
-        <span
-          className="font-medium truncate"
-          title={character.name === '音效' ? '[音效]' : character.name}
+      {/* Col 3: Character Bar */}
+      <div className="relative min-w-0">
+        <div
+          className={`p-2 rounded-md flex items-center ${charBgClass} ${charTextClass} gap-x-2 min-w-0 h-9 text-sm`}
+          style={{ ...charBgStyle, ...charTextStyle }}
         >
-          {character.name === '音效' ? '[音效]' : character.name}
-        </span>
+          <span className="font-medium truncate">
+            {character.name === '音效' ? '[音效]' : character.name}
+          </span>
+        </div>
+        {(cardRows.length > 0 || character.description) && (
+          <div className="pointer-events-none fixed right-6 top-44 z-50 hidden max-h-[68vh] w-80 overflow-y-auto rounded-md border border-slate-600 bg-slate-900 p-3 text-sm text-slate-100 shadow-2xl group-hover:block">
+            <div className="mb-2 font-semibold text-sky-300">{character.name}</div>
+            {profileSummary && (
+              <div className="mb-2 text-xs text-slate-300">{profileSummary}</div>
+            )}
+            {character.description && (
+              <div className="mb-2 text-xs leading-5 text-slate-300">
+                <span className="text-slate-400">描述：</span>
+                {character.description}
+              </div>
+            )}
+            <div className="space-y-1.5">
+              {cardRows.map(([label, value]) => (
+                <div key={label} className="text-xs leading-5">
+                  <span className="font-semibold text-slate-400">{label}：</span>
+                  <span className="whitespace-pre-wrap text-slate-100">{value}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Col 4: Action Buttons */}
       <div className="flex space-x-1 flex-shrink-0">
+        <button
+          onClick={() => onGenerateAiProfile(character)}
+          className="text-sm p-1 text-slate-400 hover:text-fuchsia-300 disabled:cursor-wait disabled:text-fuchsia-300/70"
+          title={`用 DeepSeek 生成 ${character.name} 的角色描述`}
+          aria-label={`AI生成角色 ${character.name} 的描述`}
+          disabled={isGeneratingAiProfile}
+        >
+          <SparklesIcon className="w-4 h-4" />
+        </button>
         <button
           onClick={() => onOpenCharacterSidePanel(character)}
           className="text-sm p-1 text-slate-400 hover:text-sky-300"
@@ -149,12 +209,12 @@ const CharacterListItemView: React.FC<CharacterListItemViewProps> = ({
       </div>
       
       {/* New Row for Description, aligned under Col 3 */}
-      {character.description && (
+      {visibleDescription && (
         <p 
           className="col-start-3 col-span-2 text-base text-slate-200 mt-1 px-1 truncate" 
-          title={character.description}
+          title={visibleDescription}
         >
-          {character.description}
+          {visibleDescription}
         </p>
       )}
     </div>

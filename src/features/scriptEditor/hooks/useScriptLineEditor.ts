@@ -8,6 +8,25 @@ export const useScriptLineEditor = (
   applyUndoableProjectUpdate: (updater: (prevProject: Project) => Project) => void,
   selectedChapterId: string | null
 ) => {
+  const logEditorFocusDebug = useCallback(
+    (message: string, payload: Record<string, unknown>) => {
+      if (process.env.NODE_ENV !== 'development') {
+        try {
+          if (
+            typeof window === 'undefined' ||
+            window.localStorage.getItem('__editor_focus_debug__') !== '1'
+          ) {
+            return;
+          }
+        } catch (_) {
+          return;
+        }
+      }
+
+      console.info('[EditorFocusDebug][ScriptLineStore]', message, payload);
+    },
+    []
+  );
 
   const updateLineInProject = useCallback((chapterId: string, lineId: string, lineUpdater: (line: ScriptLine) => ScriptLine) => {
     applyUndoableProjectUpdate(prevProject => ({
@@ -27,6 +46,12 @@ export const useScriptLineEditor = (
   const handleUpdateScriptLineText = useCallback((chapterId: string, lineId: string, newText: string) => {
     // 清空后自动删除整行，避免留下空白台词框
     const sanitized = (newText || '').replace(/\u200B/g, '');
+    logEditorFocusDebug('handleUpdateScriptLineText called', {
+      chapterId,
+      lineId,
+      textLength: sanitized.length,
+      selectedChapterId,
+    });
     if (sanitized.trim() === '') {
       applyUndoableProjectUpdate(prevProject => ({
         ...prevProject,
@@ -49,7 +74,7 @@ export const useScriptLineEditor = (
       isTextModifiedManual: true,
       isAiAudioSynced: line.text === sanitized,
     }));
-  }, [applyUndoableProjectUpdate, updateLineInProject]);
+  }, [applyUndoableProjectUpdate, logEditorFocusDebug, selectedChapterId, updateLineInProject]);
 
   const handleUpdateSoundType = useCallback((chapterId: string, lineId: string, newSoundType: string) => {
     updateLineInProject(chapterId, lineId, line => ({

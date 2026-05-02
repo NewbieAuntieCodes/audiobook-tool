@@ -12,12 +12,23 @@ export interface Character {
   textColor?: string; // Character text color: Tailwind color class or hex code
   cvName?: string;
   description?: string;
+  profile?: CharacterProfile;
   cvBackgroundColor?: string; // CV background: Tailwind CSS class or hex code
   cvTextColor?: string;     // CV text color: Tailwind CSS class or hex code
   aiVoicePreset?: string; // Future use
   isStyleLockedToCv?: boolean; // If true, this character's style is individually locked and should not be changed by a CV-level "Unify Styles" action.
   status?: 'active' | 'merged'; // For soft deletion/merging
   mergedIntoCharacterId?: string; // If status is 'merged'
+}
+
+export interface CharacterProfile {
+  age?: string;
+  gender?: string;
+  occupation?: string;
+  personality?: string;
+  voiceDirection?: string;
+  relationships?: string;
+  notes?: string;
 }
 
 export interface IgnoredSoundKeyword {

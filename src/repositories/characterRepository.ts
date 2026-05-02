@@ -22,6 +22,7 @@ export interface CreateCharacterInput {
   textColor?: string;
   cvName?: string;
   description?: string;
+  profile?: Character['profile'];
   isStyleLockedToCv?: boolean;
 }
 
@@ -116,6 +117,7 @@ export class CharacterRepository {
         textColor: input.textColor || '',
         cvName: input.cvName || '',
         description: input.description || '',
+        profile: input.profile,
         isStyleLockedToCv: input.isStyleLockedToCv ?? false,
         status: 'active',
       };

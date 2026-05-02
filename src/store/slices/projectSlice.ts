@@ -3,6 +3,10 @@ import { AppState } from '../useStore';
 import { Project, Collaborator, Chapter, AudioBlob, ScriptLine, Character, SilenceSettings, MasterAudio, TextMarker, IgnoredSoundKeyword } from '../../types';
 import { db } from '../../db';
 import { bufferToWav } from '../../lib/wavEncoder';
+import {
+  logLocalCodexPerf,
+  measureLocalCodexPerfSync,
+} from '../../lib/localCodexPerfDebug';
 // FIX: Import `defaultSilenceSettings` to resolve reference error.
 import { defaultSilenceSettings } from '../../lib/defaultSilenceSettings';
 
@@ -12,6 +16,12 @@ const defaultCharConfigs = [
   { name: '待识别角色', color: 'bg-orange-400', textColor: 'text-black', description: '由系统自动识别但尚未分配的角色' },
   { name: '[音效]', color: 'bg-transparent', textColor: 'text-red-500', description: '用于标记音效的文字描述' },
 ];
+
+const PROJECT_PERSIST_DEBOUNCE_MS = 1200;
+const PROJECT_LAST_MODIFIED_FRESH_WINDOW_MS = 5000;
+const pendingProjectPersistById = new Map<string, Project>();
+const pendingProjectPersistResolversById = new Map<string, Array<() => void>>();
+const projectPersistTimerById = new Map<string, number>();
 
 export interface ProjectSlice {
   projects: Project[];
@@ -73,18 +83,87 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     const state = get();
     const existing = state.projects.find(p => p.id === updatedProject.id);
     const baseMarkers = existing?.textMarkers || updatedProject.textMarkers || [];
+    const shouldRecalculateBgmMarkers = hasProjectTextContentChanged(existing, updatedProject);
+    const now = Date.now();
+    const incomingLastModified =
+      typeof updatedProject.lastModified === 'number' ? updatedProject.lastModified : 0;
+    const shouldPreserveIncomingLastModified =
+      incomingLastModified > 0 &&
+      Math.abs(now - incomingLastModified) <= PROJECT_LAST_MODIFIED_FRESH_WINDOW_MS;
+    const { result: textMarkers, durationMs: markerRecalcDurationMs } = measureLocalCodexPerfSync(
+      'projectSlice.updateProject.textMarkers',
+      () =>
+        shouldRecalculateBgmMarkers
+          ? recalculateBgmMarkersFromText(updatedProject, baseMarkers)
+          : baseMarkers
+    );
     const projectWithTimestamp: Project = {
       ...updatedProject,
-      lastModified: Date.now(),
-      textMarkers: recalculateBgmMarkersFromText(updatedProject, baseMarkers),
+      lastModified: shouldPreserveIncomingLastModified ? incomingLastModified : now,
+      textMarkers,
     };
-    await db.projects.put(projectWithTimestamp);
-    set(state => {
-      const updatedProjects = state.projects
-        .map(p => p.id === updatedProject.id ? projectWithTimestamp : p)
-        .sort((a,b) => b.lastModified - a.lastModified);
-      return { projects: updatedProjects };
+
+    const { durationMs: zustandSetDurationMs } = measureLocalCodexPerfSync(
+      'projectSlice.updateProject.zustandSet',
+      () => {
+        set(state => {
+          const updatedProjects = state.projects
+            .map(p => p.id === updatedProject.id ? projectWithTimestamp : p)
+            .sort((a,b) => b.lastModified - a.lastModified);
+          return { projects: updatedProjects };
+        });
+      }
+    );
+
+    pendingProjectPersistById.set(projectWithTimestamp.id, projectWithTimestamp);
+
+    const existingTimerId = projectPersistTimerById.get(projectWithTimestamp.id);
+    if (typeof existingTimerId === 'number') {
+      window.clearTimeout(existingTimerId);
+    }
+
+    const persistPromise = new Promise<void>((resolve) => {
+      const resolvers = pendingProjectPersistResolversById.get(projectWithTimestamp.id) || [];
+      resolvers.push(resolve);
+      pendingProjectPersistResolversById.set(projectWithTimestamp.id, resolvers);
     });
+
+    logLocalCodexPerf('projectSlice.updateProject.schedulePersist', {
+      projectId: projectWithTimestamp.id,
+      shouldRecalculateBgmMarkers,
+      preservedIncomingLastModified: shouldPreserveIncomingLastModified,
+      markerRecalcDurationMs,
+      zustandSetDurationMs,
+      debounceMs: PROJECT_PERSIST_DEBOUNCE_MS,
+      chapterCount: projectWithTimestamp.chapters.length,
+    });
+
+    const timerId = window.setTimeout(async () => {
+      projectPersistTimerById.delete(projectWithTimestamp.id);
+      const latestProject = pendingProjectPersistById.get(projectWithTimestamp.id);
+      const resolvers = pendingProjectPersistResolversById.get(projectWithTimestamp.id) || [];
+      pendingProjectPersistById.delete(projectWithTimestamp.id);
+      pendingProjectPersistResolversById.delete(projectWithTimestamp.id);
+
+      try {
+        if (latestProject) {
+          const persistStartedAt = Date.now();
+          await db.projects.put(latestProject);
+          logLocalCodexPerf('projectSlice.updateProject.persist', {
+            projectId: latestProject.id,
+            chapterCount: latestProject.chapters.length,
+            durationMs: Date.now() - persistStartedAt,
+          });
+        }
+      } catch (error) {
+        console.error(`Failed to persist project ${projectWithTimestamp.id}:`, error);
+      } finally {
+        resolvers.forEach((resolver) => resolver());
+      }
+    }, PROJECT_PERSIST_DEBOUNCE_MS);
+
+    projectPersistTimerById.set(projectWithTimestamp.id, timerId);
+    await persistPromise;
   },
   deleteProject: async (projectId) => {
     const state = get();
@@ -473,6 +552,55 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
 });
 
 // ---- Helpers ----
+
+function hasProjectTextContentChanged(
+  previousProject: Project | undefined,
+  nextProject: Project
+): boolean {
+  if (!previousProject) {
+    return true;
+  }
+
+  if ((previousProject.rawFullScript || '') !== (nextProject.rawFullScript || '')) {
+    return true;
+  }
+
+  const previousChapters = previousProject.chapters || [];
+  const nextChapters = nextProject.chapters || [];
+  if (previousChapters.length !== nextChapters.length) {
+    return true;
+  }
+
+  for (let chapterIndex = 0; chapterIndex < nextChapters.length; chapterIndex += 1) {
+    const previousChapter = previousChapters[chapterIndex];
+    const nextChapter = nextChapters[chapterIndex];
+
+    if (!previousChapter || previousChapter.id !== nextChapter.id) {
+      return true;
+    }
+
+    const previousLines = previousChapter.scriptLines || [];
+    const nextLines = nextChapter.scriptLines || [];
+    if (previousLines.length !== nextLines.length) {
+      return true;
+    }
+
+    for (let lineIndex = 0; lineIndex < nextLines.length; lineIndex += 1) {
+      const previousLine = previousLines[lineIndex];
+      const nextLine = nextLines[lineIndex];
+
+      if (!previousLine || previousLine.id !== nextLine.id) {
+        return true;
+      }
+
+      if ((previousLine.text || '') !== (nextLine.text || '')) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
 
 /**
  * 从项目纯文本（<BGM> + //）重新计算所有 BGM 文本标记，只保留/替换 type === 'bgm' 的部分。

@@ -4,11 +4,25 @@ import { Character, Project } from '../../types';
 import { db } from '../../db';
 import { characterRepository, projectRepository } from '../../repositories';
 import { normalizeCharacterNameKey, sanitizeCharacterDisplayName } from '../../lib/characterName';
+import {
+  logLocalCodexPerf,
+  measureLocalCodexPerfSync,
+} from '../../lib/localCodexPerfDebug';
 
 export interface CharacterSlice {
   characters: Character[];
-  addCharacter: (characterToAdd: Pick<Character, 'name' | 'color' | 'textColor' | 'cvName' | 'description' | 'isStyleLockedToCv'>, projectId: string) => Character;
+  addCharacter: (characterToAdd: Pick<Character, 'name' | 'color' | 'textColor' | 'cvName' | 'description' | 'profile' | 'isStyleLockedToCv'>, projectId: string) => Character;
+  bulkAssignCvToCharacters: (
+    projectId: string,
+    assignments: Array<{
+      characterId: string;
+      cvName: string;
+      bgColor: string;
+      textColor: string;
+    }>
+  ) => Promise<void>;
   editCharacter: (characterBeingEdited: Character, updatedCvName?: string, updatedCvBgColor?: string, updatedCvTextColor?: string) => Promise<void>;
+  updateCharacterProfile: (characterId: string, profile: NonNullable<Character['profile']>) => Promise<void>;
   deleteCharacter: (characterId: string) => Promise<void>;
   deleteCharacters: (characterIds: string[]) => Promise<void>;
   cleanupDuplicateCharactersInProject: (projectId: string) => Promise<{ deletedCharacters: number; groups: number; updatedLines: number }>;
@@ -54,6 +68,7 @@ export const createCharacterSlice: StateCreator<AppState, [], [], CharacterSlice
       textColor: textFromCv || characterToAdd.textColor || globalTemplate?.textColor || 'text-slate-100',
       cvName: cvNameTrimmed || globalTemplate?.cvName || '',
       description: (characterToAdd.description ?? globalTemplate?.description ?? ''),
+      profile: characterToAdd.profile ?? globalTemplate?.profile,
       isStyleLockedToCv: isLocked,
       status: 'active',
     };
@@ -67,6 +82,7 @@ export const createCharacterSlice: StateCreator<AppState, [], [], CharacterSlice
       textColor: finalCharacter.textColor,
       cvName: finalCharacter.cvName,
       description: finalCharacter.description,
+      profile: finalCharacter.profile,
       isStyleLockedToCv: finalCharacter.isStyleLockedToCv,
     }).catch(err => console.error("Failed to add character:", err));
 
@@ -74,6 +90,156 @@ export const createCharacterSlice: StateCreator<AppState, [], [], CharacterSlice
     set(s => ({ characters: [...s.characters, finalCharacter] }));
 
     return finalCharacter;
+  },
+  bulkAssignCvToCharacters: async (projectId, assignments) => {
+    if (!projectId || !Array.isArray(assignments) || assignments.length === 0) {
+      return;
+    }
+
+    const state = get();
+    const projectToUpdate = state.projects.find((project) => project.id === projectId);
+    if (!projectToUpdate) {
+      return;
+    }
+
+    const { result: assignmentByCharacterId, durationMs: assignmentMapBuildDurationMs } =
+      measureLocalCodexPerfSync('characterSlice.bulkAssignCvToCharacters.assignmentMap', () =>
+        new Map(
+          assignments
+            .filter(
+              (item) =>
+                item &&
+                typeof item.characterId === 'string' &&
+                item.characterId.trim() !== '' &&
+                typeof item.cvName === 'string'
+            )
+            .map((item) => [
+              item.characterId,
+              {
+                cvName: item.cvName.trim(),
+                bgColor: item.bgColor || 'bg-slate-700',
+                textColor: item.textColor || 'text-slate-300',
+              },
+            ])
+        )
+      );
+
+    if (assignmentByCharacterId.size === 0) {
+      return;
+    }
+
+    const nextCvStyles = { ...(projectToUpdate.cvStyles || {}) };
+    let cvStylesChanged = false;
+    const charactersToUpdateInDb: Character[] = [];
+
+    const updatedCharacters = state.characters.map((character) => {
+      if (character.projectId !== projectId) {
+        return character;
+      }
+
+      const assignment = assignmentByCharacterId.get(character.id);
+      if (!assignment) {
+        return character;
+      }
+
+      const existingStyle = assignment.cvName ? nextCvStyles[assignment.cvName] : undefined;
+      if (assignment.cvName && !existingStyle) {
+        nextCvStyles[assignment.cvName] = {
+          bgColor: assignment.bgColor,
+          textColor: assignment.textColor,
+        };
+        cvStylesChanged = true;
+      }
+
+      const resolvedStyle =
+        (assignment.cvName ? nextCvStyles[assignment.cvName] : undefined) || {
+          bgColor: assignment.bgColor,
+          textColor: assignment.textColor,
+        };
+
+      let nextCharacter = character;
+      let characterChanged = (character.cvName || '') !== assignment.cvName;
+
+      if (characterChanged) {
+        nextCharacter = {
+          ...nextCharacter,
+          cvName: assignment.cvName,
+        };
+      }
+
+      if (!nextCharacter.isStyleLockedToCv && assignment.cvName) {
+        if (
+          nextCharacter.color !== resolvedStyle.bgColor ||
+          nextCharacter.textColor !== resolvedStyle.textColor
+        ) {
+          nextCharacter = {
+            ...nextCharacter,
+            color: resolvedStyle.bgColor,
+            textColor: resolvedStyle.textColor,
+          };
+          characterChanged = true;
+        }
+      }
+
+      if (!characterChanged) {
+        return character;
+      }
+
+      charactersToUpdateInDb.push(nextCharacter);
+      return nextCharacter;
+    });
+
+    if (!cvStylesChanged && charactersToUpdateInDb.length === 0) {
+      return;
+    }
+
+    const updatedProject = cvStylesChanged
+      ? {
+          ...projectToUpdate,
+          cvStyles: nextCvStyles,
+          lastModified: Date.now(),
+        }
+      : null;
+
+    const transactionStartedAt = Date.now();
+    await db.transaction('rw', db.projects, db.characters, async () => {
+      if (updatedProject) {
+        await db.projects.put(updatedProject);
+      }
+      if (charactersToUpdateInDb.length > 0) {
+        await characterRepository.bulkUpdate(charactersToUpdateInDb);
+      }
+    });
+    const transactionDurationMs = Date.now() - transactionStartedAt;
+
+    const { durationMs: zustandSetDurationMs } = measureLocalCodexPerfSync(
+      'characterSlice.bulkAssignCvToCharacters.zustandSet',
+      () => {
+        set((currentState) => {
+          const nextProjects = updatedProject
+            ? currentState.projects
+                .map((project) => (project.id === projectId ? updatedProject : project))
+                .sort((left, right) => right.lastModified - left.lastModified)
+            : currentState.projects;
+
+          return {
+            projects: nextProjects,
+            characters: updatedCharacters,
+          };
+        });
+      }
+    );
+
+    logLocalCodexPerf('characterSlice.bulkAssignCvToCharacters', {
+      projectId,
+      inputAssignmentCount: assignments.length,
+      assignmentMapSize: assignmentByCharacterId.size,
+      updatedCharacterCount: charactersToUpdateInDb.length,
+      cvStylesChanged,
+      assignmentMapBuildDurationMs,
+      transactionDurationMs,
+      zustandSetDurationMs,
+    });
   },
   editCharacter: async (characterBeingEdited, updatedCvNameFromModalProp, updatedCvBgColorFromModalProp, updatedCvTextColorFromModalProp) => {
     const projectId = characterBeingEdited.projectId || get().selectedProjectId;
@@ -135,6 +301,28 @@ export const createCharacterSlice: StateCreator<AppState, [], [], CharacterSlice
         projects: state.projects.map(p => p.id === projectId ? updatedProject : p),
         characters: state.characters.map(c => c.id === finalCharacterData.id ? finalCharacterData : c),
       };
+    });
+  },
+  updateCharacterProfile: async (characterId, profile) => {
+    const { characters } = get();
+    const characterToUpdate = characters.find((character) => character.id === characterId);
+    if (!characterToUpdate) {
+      throw new Error('角色不存在，无法保存 AI 描述。');
+    }
+
+    const updatedCharacter = {
+      ...characterToUpdate,
+      profile: {
+        ...(characterToUpdate.profile || {}),
+        ...profile,
+      },
+    };
+
+    await characterRepository.update(updatedCharacter);
+    set({
+      characters: characters.map((character) =>
+        character.id === characterId ? updatedCharacter : character
+      ),
     });
   },
   deleteCharacter: async (characterId) => {

@@ -1,43 +1,13 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useStore } from '../../../store/useStore';
-import { TextMarker, PinnedSound, IgnoredSoundKeyword, Project, Chapter, ScriptLine, SoundLibraryItem, SoundGroup } from '../../../types';
+import { TextMarker, PinnedSound, SoundGroup } from '../../../types';
 import { ensureSoundLufs } from '../../../services/lufsService';
-
-// Helper to find lineId and offset from a Range endpoint
-const findLineIdAndOffset = (container: Node, offset: number): { lineId: string; offset: number } | null => {
-    const lineElement = (
-      container.nodeType === Node.ELEMENT_NODE ? (container as Element) : (container.parentElement as Element | null)
-    )?.closest('[data-line-id]');
-
-    if (!lineElement) return null;
-    const lineId = lineElement.getAttribute('data-line-id')!;
-    
-    const pElement = lineElement.querySelector('p');
-    if (!pElement) return null;
-
-    // Create a range from the start of the paragraph to the cursor position
-    const range = document.createRange();
-    range.selectNodeContents(pElement);
-    try {
-        range.setEnd(container, offset);
-    } catch (e) {
-        // This can fail if the container/offset is invalid, e.g., in a different DOM tree.
-        // We can ignore it and the length will be the full content, which is a safe fallback.
-    }
-
-    // The length of the range's content is the offset from the start of the paragraph
-    const calculatedOffset = range.toString().length;
-
-    return { lineId, offset: calculatedOffset };
-};
-
-const createKeywordsFromFilename = (filename: string): string[] => {
-    const nameWithoutExt = filename.substring(0, filename.lastIndexOf('.')) || filename;
-    return nameWithoutExt
-      .split(/[_ \-()]/)
-      .map((s) => s.trim())
-      .filter((s) => s && !/^\d+$/.test(s));
-};
+import {
+    applyBgmWithEndMarkerToProject,
+    applySfxToProject,
+    clearFormattingInProject,
+    findLineIdAndOffset,
+} from './postProductionEditing';
 
 
 export const usePostProduction = () => {
@@ -52,9 +22,7 @@ export const usePostProduction = () => {
         selectedProjectId: state.selectedProjectId,
         projects: state.projects,
         updateProjectTextMarkers: state.updateProjectTextMarkers,
-        updateLineText: state.updateLineText, // keep for other potential uses
         updateProject: state.updateProject,
-        addIgnoredSoundKeyword: state.addIgnoredSoundKeyword,
         soundLibrary: state.soundLibrary,
         soundObservationList: state.soundObservationList,
     }));
@@ -87,150 +55,21 @@ export const usePostProduction = () => {
 
     const handleClearFormatting = useCallback(() => {
         if (!selectedRange || !currentProject) return;
-    
-        // 1. Define all regexes
-        const sfxRegex = /[\[\uFF3B\u3010\u3014][^\]\uFF3D\u3011\u3015]+[\]\uFF3D\u3011\u3015]/g;
-        const bgmRegex = /<\s*(?:(?:\?-|[\u266A\u266B])\s*-\s*)?([^<>]*?)\s*>/g;
-        const endRegex = /\/\/+\s*/g;
-    
-        const allKeywords = new Set<string>([...soundObservationList]);
-        soundLibrary.forEach((item) => {
-            createKeywordsFromFilename(item.name).forEach((kw) => allKeywords.add(kw));
+
+        const nextProject = clearFormattingInProject({
+            project: currentProject,
+            range: selectedRange,
+            soundLibraryItems: soundLibrary,
+            soundObservationList,
         });
-        const sortedKeywords = Array.from(allKeywords).filter(kw => kw.length > 1).sort((a, b) => b.length - a.length);
-        const keywordsRegex = sortedKeywords.length > 0 ? new RegExp(`(${sortedKeywords.join('|')})`, 'g') : null;
-    
-        // 2. Get selection info
-        const { startContainer, startOffset, endContainer, endOffset } = selectedRange;
-        const start = findLineIdAndOffset(startContainer, startOffset);
-        const end = findLineIdAndOffset(endContainer, endOffset);
-        if (!start || !end) {
+        if (!nextProject) {
             console.warn('[CF] Selection could not be mapped to a line element; aborting.');
             clearSelection();
             return;
         }
-    
-        const orderMap = new Map<string, number>();
-        currentProject.chapters.forEach((ch, chIdx) => ch.scriptLines.forEach((ln, lnIdx) => orderMap.set(ln.id, chIdx * 1e6 + lnIdx)));
-    
-        const startKey = orderMap.get(start.lineId) ?? 0;
-        const endKey = orderMap.get(end.lineId) ?? 0;
-        const first = startKey <= endKey ? start : end;
-        const last = startKey <= endKey ? end : start;
-    
-        // 3. Clone project and loop through affected lines to apply changes
-        const projectClone = JSON.parse(JSON.stringify(currentProject)) as Project;
-        let projectWasModified = false;
-    
-        const lineOrder = [...orderMap.keys()].sort((a, b) => (orderMap.get(a) ?? 0) - (orderMap.get(b) ?? 0));
-        const firstIdx = lineOrder.indexOf(first.lineId);
-        const lastIdx = lineOrder.indexOf(last.lineId);
-        const affectedLineIds = new Set<string>();
-        if (firstIdx !== -1 && lastIdx !== -1) {
-            for (let i = firstIdx; i <= lastIdx; i++) {
-                affectedLineIds.add(lineOrder[i]);
-            }
-        }
-    
-        projectClone.chapters.forEach(chapter => {
-            chapter.scriptLines.forEach(line => {
-                if (!affectedLineIds.has(line.id)) return;
-    
-                const originalText = line.text || '';
-                
-                const isFirst = line.id === first.lineId;
-                const isLast = line.id === last.lineId;
-                const isCollapsed = isFirst && isLast && first.offset === last.offset;
-                const selStart = isFirst ? first.offset : 0;
-                const selEnd = isLast ? last.offset : originalText.length;
-    
-                // Part A: Add sound assistant keywords to ignore list
-                if (keywordsRegex) {
-                    keywordsRegex.lastIndex = 0;
-                    let keywordMatch;
-                    while ((keywordMatch = keywordsRegex.exec(originalText))) {
-                        const keyword = keywordMatch[0];
-                        const index = keywordMatch.index;
-                        const keywordEnd = index + keyword.length;
-                        
-                        let overlap = 0;
-                        if (isCollapsed) {
-                            if (index < selStart && keywordEnd > selStart) overlap = 1;
-                        } else {
-                            overlap = Math.max(0, Math.min(keywordEnd, selEnd) - Math.max(index, selStart));
-                        }
-                        
-                        if (overlap > 0) {
-                            line.ignoredSoundKeywords = line.ignoredSoundKeywords || [];
-                            if (!line.ignoredSoundKeywords.some(ik => ik.keyword === keyword && ik.index === index)) {
-                                line.ignoredSoundKeywords.push({ keyword, index });
-                                projectWasModified = true;
-                            }
-                        }
-                    }
-                }
-    
-                // Part B: Remove physical markers like [sfx], <bgm>, // from text
-                type Span = { from: number; to: number };
-                const spansToRemove: Span[] = [];
-                const findOverlappingSpans = (regex: RegExp) => {
-                    let match;
-                    while ((match = regex.exec(originalText))) {
-                        const from = match.index;
-                        const to = from + match[0].length;
-                        
-                        let overlap = 0;
-                        if (isCollapsed) {
-                            if (from < selStart && to > selStart) overlap = 1;
-                        } else {
-                            overlap = Math.max(0, Math.min(to, selEnd) - Math.max(from, selStart));
-                        }
-                        
-                        if (overlap > 0) spansToRemove.push({ from, to });
-                    }
-                };
-                findOverlappingSpans(sfxRegex);
-                findOverlappingSpans(bgmRegex);
-                findOverlappingSpans(endRegex);
-    
-                if (spansToRemove.length > 0) {
-                    spansToRemove.sort((a, b) => b.from - a.from); // reverse order to avoid index shifting
-                    let currentText = originalText;
-                    for (const span of spansToRemove) {
-                        currentText = currentText.slice(0, span.from) + currentText.slice(span.to);
-                    }
-                    if (currentText !== originalText) {
-                        line.text = currentText;
-                        projectWasModified = true;
-                    }
-                }
-            });
-        });
-    
-        // Part C: Remove scene/BGM markers that intersect with the selection
-        const intersects = (mStart: { lineId: string; offset?: number }, mEnd: { lineId: string; offset?: number }) => {
-            const keyOf = (id: string, off: number) => (orderMap.get(id) ?? 0) * 1e4 + off;
-            const selA = keyOf(first.lineId, first.offset);
-            const selB = keyOf(last.lineId, last.offset);
-            const a = keyOf(mStart.lineId, mStart.offset ?? 0);
-            const b = keyOf(mEnd.lineId, mEnd.offset ?? 0);
-            const minSel = Math.min(selA, selB), maxSel = Math.max(selA, selB);
-            const minM = Math.min(a, b), maxM = Math.max(a, b);
-            return !(maxM <= minSel || minM >= maxSel);
-        };
-        const originalMarkerCount = (projectClone.textMarkers || []).length;
-        projectClone.textMarkers = (projectClone.textMarkers || []).filter(m => {
-            // 同时清理场景(scene)和 BGM(bgm) 标记，只要它们与当前选区有交集
-            if ((m.type !== 'scene' && m.type !== 'bgm') || !m.startLineId || !m.endLineId) return true;
-            return !intersects({ lineId: m.startLineId, offset: m.startOffset ?? 0 }, { lineId: m.endLineId, offset: m.endOffset ?? 0 });
-        });
-        if (originalMarkerCount !== projectClone.textMarkers.length) {
-            projectWasModified = true;
-        }
-        
-        // 4. If any change was made, update the project in a single atomic operation
-        if (projectWasModified) {
-            updateProject(projectClone);
+
+        if (nextProject !== currentProject) {
+            updateProject(nextProject);
         }
         clearSelection();
     }, [selectedRange, currentProject, updateProject, clearSelection, soundLibrary, soundObservationList]);

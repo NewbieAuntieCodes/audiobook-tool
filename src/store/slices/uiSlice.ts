@@ -5,14 +5,32 @@ import React from 'react';
 import { db } from '../../db';
 import { miscRepository } from '../../repositories';
 
-export type AiProvider = 'gemini' | 'openai' | 'moonshot' | 'deepseek';
+export type AiProvider = 'gemini' | 'openai' | 'moonshot' | 'deepseek' | 'codex';
 export type WebSocketStatus = 'connecting' | 'connected' | 'disconnected';
+export type LocalCodexPreset = 'default_annotation' | 'high_accuracy' | 'custom';
+export type LocalCodexReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 
 export interface ApiSettings {
   gemini: { apiKey: string; baseUrl?: string };
   openai: { apiKey: string; baseUrl: string; model: string };
   moonshot: { apiKey: string; baseUrl: string; model: string };
   deepseek: { apiKey: string; baseUrl: string; model: string };
+  codex: { apiKey: string; baseUrl: string; model: string };
+}
+
+export interface LocalCodexSettings {
+  preset: LocalCodexPreset;
+  customModel: string;
+  customReasoningEffort: LocalCodexReasoningEffort;
+}
+
+export interface ResolvedLocalCodexExecutionSettings {
+  preset: LocalCodexPreset;
+  presetLabel: string;
+  description: string;
+  model: string;
+  reasoningEffort: LocalCodexReasoningEffort;
+  summary: string;
 }
 
 export interface LufsSettings {
@@ -25,6 +43,120 @@ export const defaultPostProductionLufsSettings: PostProductionLufsSettings = {
   ambience: { enabled: false, target: -45 },
   sfx: { enabled: false, target: -30 },
   music: { enabled: false, target: -40 },
+};
+
+export const LOCAL_CODEX_REASONING_OPTIONS: Array<{
+  value: LocalCodexReasoningEffort;
+  label: string;
+}> = [
+  { value: 'minimal', label: 'minimal' },
+  { value: 'low', label: 'low' },
+  { value: 'medium', label: 'medium' },
+  { value: 'high', label: 'high' },
+  { value: 'xhigh', label: 'xhigh' },
+];
+
+const LOCAL_CODEX_PRESET_DEFINITIONS: Record<
+  Exclude<LocalCodexPreset, 'custom'>,
+  {
+    label: string;
+    description: string;
+    model: string;
+    reasoningEffort: LocalCodexReasoningEffort;
+  }
+> = {
+  default_annotation: {
+    label: '默认标注',
+    description: '日常画本步骤2默认使用，兼顾速度和稳定性。',
+    model: 'gpt-5.3',
+    reasoningEffort: 'high',
+  },
+  high_accuracy: {
+    label: '高精度',
+    description: '人物关系复杂、误判较多时再切换。',
+    model: 'gpt-5.4',
+    reasoningEffort: 'xhigh',
+  },
+};
+
+export const LOCAL_CODEX_PRESET_OPTIONS: Array<{
+  value: LocalCodexPreset;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: 'default_annotation',
+    label: '默认标注',
+    description: 'gpt-5.3 + high',
+  },
+  {
+    value: 'high_accuracy',
+    label: '高精度',
+    description: 'gpt-5.4 + xhigh',
+  },
+  {
+    value: 'custom',
+    label: '自定义',
+    description: '手动指定模型和推理强度',
+  },
+];
+
+export const defaultLocalCodexSettings: LocalCodexSettings = {
+  preset: 'default_annotation',
+  customModel: 'gpt-5.3',
+  customReasoningEffort: 'high',
+};
+
+export const normalizeLocalCodexSettings = (
+  rawValue: Partial<LocalCodexSettings> | null | undefined
+): LocalCodexSettings => {
+  const preset =
+    rawValue?.preset === 'default_annotation' ||
+    rawValue?.preset === 'high_accuracy' ||
+    rawValue?.preset === 'custom'
+      ? rawValue.preset
+      : defaultLocalCodexSettings.preset;
+  const customReasoningEffort = LOCAL_CODEX_REASONING_OPTIONS.some(
+    (option) => option.value === rawValue?.customReasoningEffort
+  )
+    ? (rawValue?.customReasoningEffort as LocalCodexReasoningEffort)
+    : defaultLocalCodexSettings.customReasoningEffort;
+  const customModel =
+    typeof rawValue?.customModel === 'string' && rawValue.customModel.trim()
+      ? rawValue.customModel.trim()
+      : defaultLocalCodexSettings.customModel;
+
+  return {
+    preset,
+    customModel,
+    customReasoningEffort,
+  };
+};
+
+export const resolveLocalCodexExecutionSettings = (
+  rawSettings: Partial<LocalCodexSettings> | null | undefined
+): ResolvedLocalCodexExecutionSettings => {
+  const settings = normalizeLocalCodexSettings(rawSettings);
+  if (settings.preset === 'custom') {
+    return {
+      preset: 'custom',
+      presetLabel: '自定义',
+      description: '按当前填写的模型和推理强度执行。',
+      model: settings.customModel,
+      reasoningEffort: settings.customReasoningEffort,
+      summary: `${settings.customModel} + ${settings.customReasoningEffort}`,
+    };
+  }
+
+  const presetDefinition = LOCAL_CODEX_PRESET_DEFINITIONS[settings.preset];
+  return {
+    preset: settings.preset,
+    presetLabel: presetDefinition.label,
+    description: presetDefinition.description,
+    model: presetDefinition.model,
+    reasoningEffort: presetDefinition.reasoningEffort,
+    summary: `${presetDefinition.model} + ${presetDefinition.reasoningEffort}`,
+  };
 };
 
 export const SOUND_OBSERVATION_GLOBAL_CATEGORY_KEY = '__global__';
@@ -65,6 +197,7 @@ export interface UiSlice {
   isLoading: boolean;
   selectedProjectId: string | null;
   selectedChapterId: string | null;
+  scriptEditorMultiSelectedChapterIds: string[];
   aiProcessingChapterIds: string[];
   playingLineInfo: { line: ScriptLine; character: Character | undefined } | null;
   confirmModal: ConfirmModalState;
@@ -81,6 +214,7 @@ export interface UiSlice {
   isSettingsModalOpen: boolean;
   isShortcutSettingsModalOpen: boolean;
   apiSettings: ApiSettings;
+  localCodexSettings: LocalCodexSettings;
   selectedAiProvider: AiProvider;
   characterShortcuts: Record<string, string>; // key: keyboard key, value: characterId
   audioAlignmentCvFilter: string;
@@ -105,6 +239,7 @@ export interface UiSlice {
   setIsLoading: (loading: boolean) => void;
   setSelectedProjectId: (id: string | null) => void;
   setSelectedChapterId: (id: string | null) => Promise<void>;
+  setScriptEditorMultiSelectedChapterIds: (ids: string[]) => void;
   addAiProcessingChapterId: (id: string) => void;
   removeAiProcessingChapterId: (id: string) => void;
   setPlayingLine: (line: ScriptLine, character: Character | undefined) => void;
@@ -127,6 +262,7 @@ export interface UiSlice {
   openShortcutSettingsModal: () => void;
   closeShortcutSettingsModal: () => void;
   setApiSettings: (settings: ApiSettings) => Promise<void>;
+  setLocalCodexSettings: (settings: LocalCodexSettings) => Promise<void>;
   setSelectedAiProvider: (provider: AiProvider) => Promise<void>;
   setCharacterShortcuts: (shortcuts: Record<string, string>) => Promise<void>;
   setAudioAlignmentCvFilter: (filter: string) => void;
@@ -155,6 +291,7 @@ export const createUiSlice: StateCreator<AppState, [], [], UiSlice> = (set, get)
   isLoading: false,
   selectedProjectId: null,
   selectedChapterId: null,
+  scriptEditorMultiSelectedChapterIds: [],
   aiProcessingChapterIds: [],
   playingLineInfo: null,
   confirmModal: confirmModalInitState,
@@ -166,8 +303,10 @@ export const createUiSlice: StateCreator<AppState, [], [], UiSlice> = (set, get)
     gemini: { apiKey: '' },
     openai: { apiKey: '', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4-turbo' },
     moonshot: { apiKey: '', baseUrl: 'https://api.moonshot.cn/v1', model: 'moonshot-v1-8k' },
-    deepseek: { apiKey: '', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+    deepseek: { apiKey: '', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash' },
+    codex: { apiKey: '', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4' },
   },
+  localCodexSettings: defaultLocalCodexSettings,
   selectedAiProvider: 'gemini',
   characterShortcuts: {},
   audioAlignmentCvFilter: '',
@@ -195,9 +334,17 @@ export const createUiSlice: StateCreator<AppState, [], [], UiSlice> = (set, get)
         const project = projects.find(p => p.id === id);
         // Restore last viewed chapter, or default to first chapter, or null if no chapters.
         const chapterIdToSet = project?.lastViewedChapterId || project?.chapters[0]?.id || null;
-        set({ selectedProjectId: id, selectedChapterId: chapterIdToSet });
+        set({
+          selectedProjectId: id,
+          selectedChapterId: chapterIdToSet,
+          scriptEditorMultiSelectedChapterIds: [],
+        });
     } else {
-        set({ selectedProjectId: null, selectedChapterId: null });
+        set({
+          selectedProjectId: null,
+          selectedChapterId: null,
+          scriptEditorMultiSelectedChapterIds: [],
+        });
     }
   },
   setSelectedChapterId: async (id) => {
@@ -213,6 +360,19 @@ export const createUiSlice: StateCreator<AppState, [], [], UiSlice> = (set, get)
         }));
     }
   },
+  setScriptEditorMultiSelectedChapterIds: (ids) =>
+    set({
+      scriptEditorMultiSelectedChapterIds: Array.isArray(ids)
+        ? Array.from(
+            new Set(
+              ids.filter(
+                (chapterId): chapterId is string =>
+                  typeof chapterId === 'string' && chapterId.trim() !== ''
+              )
+            )
+          )
+        : [],
+    }),
   addAiProcessingChapterId: (id) =>
     set((state) => ({
       aiProcessingChapterIds: state.aiProcessingChapterIds.includes(id)
@@ -260,6 +420,11 @@ export const createUiSlice: StateCreator<AppState, [], [], UiSlice> = (set, get)
   setApiSettings: async (settings) => {
     await db.misc.put({ key: 'apiSettings', value: settings });
     set({ apiSettings: settings });
+  },
+  setLocalCodexSettings: async (settings) => {
+    const normalizedSettings = normalizeLocalCodexSettings(settings);
+    await db.misc.put({ key: 'localCodexSettings', value: normalizedSettings });
+    set({ localCodexSettings: normalizedSettings });
   },
   setSelectedAiProvider: async (provider) => {
     await db.misc.put({ key: 'selectedAiProvider', value: provider });

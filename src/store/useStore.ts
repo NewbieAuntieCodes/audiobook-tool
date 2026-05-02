@@ -4,7 +4,15 @@ import { AppView, CVStylesMap, PresetColor, SoundLibraryItem, IgnoredSoundKeywor
 import { Project, Character, MergeHistoryEntry } from '../types';
 
 // Import slice creators and their state/action types
-import { createUiSlice, UiSlice, LufsSettings, defaultPostProductionLufsSettings, SOUND_OBSERVATION_GLOBAL_CATEGORY_KEY } from './slices/uiSlice';
+import {
+  createUiSlice,
+  UiSlice,
+  LufsSettings,
+  defaultPostProductionLufsSettings,
+  defaultLocalCodexSettings,
+  normalizeLocalCodexSettings,
+  SOUND_OBSERVATION_GLOBAL_CATEGORY_KEY,
+} from './slices/uiSlice';
 import { createProjectSlice, ProjectSlice } from './slices/projectSlice';
 import { createProjectAudioSlice, ProjectAudioSlice } from './slices/projectAudioSlice';
 import { createCharacterSlice, CharacterSlice } from './slices/characterSlice';
@@ -119,6 +127,7 @@ export const useStore = create<AppState>((set, get, api) => ({
         cvColorPresets: cvColorPresetsFromDb,
         characterColorPresets: characterColorPresetsFromDb,
         apiSettings,
+        localCodexSettings,
         selectedAiProvider,
         characterShortcuts,
         soundObservationList,
@@ -416,6 +425,7 @@ export const useStore = create<AppState>((set, get, api) => ({
         cvColorPresets,
         characterColorPresets,
         apiSettings,
+        localCodexSettings: normalizeLocalCodexSettings(localCodexSettings),
         selectedAiProvider,
         characterShortcuts,
         lufsSettings,
@@ -439,6 +449,7 @@ export const useStore = create<AppState>((set, get, api) => ({
         currentView: "upload",
         isLoading: false,
         soundLibrary: [],
+        localCodexSettings: defaultLocalCodexSettings,
         soundObservationList: [],
         soundObservationByCategory: {},
       });

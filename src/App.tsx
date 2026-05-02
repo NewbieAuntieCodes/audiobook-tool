@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback, useMemo } from 'react';
+import React, { useEffect, useCallback, useMemo, useRef } from 'react';
 import { useStore } from './store/useStore';
 import { Character, CVStylesMap } from './types';
 import ConfirmModal from './components/modal/ConfirmModal';
@@ -9,6 +9,12 @@ import SettingsModal from './components/modal/SettingsModal';
 import { useWebSocket } from './hooks/useWebSocket';
 import HotkeyControlPanel from './components/HotkeyControlPanel';
 import { findSafeMergeTargetForRename } from './features/scriptEditor/utils/characterMergeOnRename';
+import {
+  applyCodexAssignmentsToStore,
+  getActiveChapterSnapshotFromStore,
+  applyCodexAssignmentsBatchToStore,
+  getChapterSnapshotsFromStore,
+} from './features/scriptEditor/services/codexChapterSync';
 
 const App: React.FC = () => {
   const {
@@ -16,6 +22,7 @@ const App: React.FC = () => {
     projects,
     characters,
     selectedProjectId,
+    selectedChapterId,
     isLoading,
     confirmModal,
     characterAndCvStyleModal,
@@ -34,23 +41,143 @@ const App: React.FC = () => {
     setWebSocketStatus,
     setWebSocketConnect,
   } = useStore();
+  const rendererClientIdRef = useRef(
+    'renderer_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10)
+  );
 
   useEffect(() => {
     loadInitialData();
   }, [loadInitialData]);
 
+  const webSocketSendRef = useRef<(data: unknown) => boolean>(() => false);
+
+  const handleWebSocketMessage = useCallback((data: any) => {
+    if (data.action === 'nextLine' && document.visibilityState === 'visible') {
+      useStore.getState().goToNextLine();
+      return;
+    }
+
+    if (data.action === 'requestChapterSnapshot') {
+      void (async () => {
+        try {
+          const snapshot = getActiveChapterSnapshotFromStore({
+            projectId: typeof data.projectId === 'string' ? data.projectId : undefined,
+            chapterId: typeof data.chapterId === 'string' ? data.chapterId : undefined,
+          });
+          webSocketSendRef.current({
+            action: 'chapterSnapshotResponse',
+            requestId: data.requestId,
+            ok: true,
+            snapshot,
+          });
+        } catch (error) {
+          webSocketSendRef.current({
+            action: 'chapterSnapshotResponse',
+            requestId: data.requestId,
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      })();
+      return;
+    }
+
+    if (data.action === 'requestChapterSnapshots') {
+      void (async () => {
+        try {
+          const bundle = getChapterSnapshotsFromStore({
+            projectId: typeof data.projectId === 'string' ? data.projectId : undefined,
+            chapterId: typeof data.chapterId === 'string' ? data.chapterId : undefined,
+            chapterIds: Array.isArray(data.chapterIds)
+              ? data.chapterIds.filter((chapterId): chapterId is string => typeof chapterId === 'string')
+              : undefined,
+            count: Number.isInteger(data.count) ? data.count : undefined,
+          });
+          webSocketSendRef.current({
+            action: 'chapterSnapshotsResponse',
+            requestId: data.requestId,
+            ok: true,
+            bundle,
+          });
+        } catch (error) {
+          webSocketSendRef.current({
+            action: 'chapterSnapshotsResponse',
+            requestId: data.requestId,
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      })();
+      return;
+    }
+
+    if (data.action === 'applyCodexAssignments') {
+      void (async () => {
+        try {
+          const result = await applyCodexAssignmentsToStore({
+            projectId: String(data.projectId || ''),
+            chapterId: String(data.chapterId || ''),
+            assignments: Array.isArray(data.assignments) ? data.assignments : [],
+          });
+          webSocketSendRef.current({
+            action: 'codexAssignmentsApplied',
+            requestId: data.requestId,
+            ok: true,
+            result,
+          });
+        } catch (error) {
+          webSocketSendRef.current({
+            action: 'codexAssignmentsApplied',
+            requestId: data.requestId,
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      })();
+      return;
+    }
+
+    if (data.action === 'applyCodexAssignmentsBatch') {
+      void (async () => {
+        try {
+          const result = await applyCodexAssignmentsBatchToStore({
+            projectId: String(data.projectId || ''),
+            chapters: Array.isArray(data.chapters) ? data.chapters : [],
+          });
+          webSocketSendRef.current({
+            action: 'codexAssignmentsBatchApplied',
+            requestId: data.requestId,
+            ok: true,
+            result,
+          });
+        } catch (error) {
+          webSocketSendRef.current({
+            action: 'codexAssignmentsBatchApplied',
+            requestId: data.requestId,
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      })();
+    }
+  }, []);
+
   // WebSocket 联动（全局控制器）
-  const { status: wsStatus, connect: connectWebSocket } = useWebSocket({
+  const {
+    status: wsStatus,
+    connect: connectWebSocket,
+    send: sendWebSocketMessage,
+  } = useWebSocket({
     url: 'ws://127.0.0.1:9002',
     autoConnect: true,
     reconnectDelay: 5000,
-    autoReconnect: false,
-    onMessage: (data) => {
-      if (data.action === 'nextLine' && document.visibilityState === 'visible') {
-        useStore.getState().goToNextLine();
-      }
-    },
+    autoReconnect: true,
+    onMessage: handleWebSocketMessage,
   });
+
+  useEffect(() => {
+    webSocketSendRef.current = sendWebSocketMessage;
+  }, [sendWebSocketMessage]);
 
   useEffect(() => {
     setWebSocketStatus(wsStatus);
@@ -60,6 +187,63 @@ const App: React.FC = () => {
     setWebSocketConnect(connectWebSocket);
     return () => setWebSocketConnect(null);
   }, [connectWebSocket, setWebSocketConnect]);
+
+  const sendRendererClientState = useCallback(() => {
+    if (wsStatus !== 'connected') return;
+    sendWebSocketMessage({
+      action: 'updateClientState',
+      role: 'renderer',
+      clientId: rendererClientIdRef.current,
+      currentView,
+      selectedProjectId: selectedProjectId || null,
+      selectedChapterId: selectedChapterId || null,
+      visibilityState:
+        typeof document !== 'undefined' ? document.visibilityState : 'hidden',
+      hasFocus:
+        typeof document !== 'undefined' && typeof document.hasFocus === 'function'
+          ? document.hasFocus()
+          : true,
+      locationHref: typeof window !== 'undefined' ? window.location.href : '',
+    });
+  }, [
+    currentView,
+    selectedChapterId,
+    selectedProjectId,
+    sendWebSocketMessage,
+    wsStatus,
+  ]);
+
+  useEffect(() => {
+    if (wsStatus !== 'connected') return;
+    sendWebSocketMessage({
+      action: 'registerClient',
+      role: 'renderer',
+      clientId: rendererClientIdRef.current,
+    });
+    sendRendererClientState();
+  }, [sendRendererClientState, sendWebSocketMessage, wsStatus]);
+
+  useEffect(() => {
+    sendRendererClientState();
+  }, [sendRendererClientState]);
+
+  useEffect(() => {
+    if (wsStatus !== 'connected') return;
+
+    const handleClientStateChange = () => {
+      sendRendererClientState();
+    };
+
+    window.addEventListener('focus', handleClientStateChange);
+    window.addEventListener('blur', handleClientStateChange);
+    document.addEventListener('visibilitychange', handleClientStateChange);
+
+    return () => {
+      window.removeEventListener('focus', handleClientStateChange);
+      window.removeEventListener('blur', handleClientStateChange);
+      document.removeEventListener('visibilitychange', handleClientStateChange);
+    };
+  }, [sendRendererClientState, wsStatus]);
 
   // 项目级 CV 名与样式
   const { projectCvStyles, projectCvNames } = useMemo<{

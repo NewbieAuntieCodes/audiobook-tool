@@ -12,11 +12,12 @@ const UploadPage: React.FC = () => {
   const [isUploading, setIsUploading] = useState(false);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   
-  const { addProject, navigateTo } = useStore();
+  const { addProject, navigateTo, setSelectedProjectId } = useStore();
 
   const handleFileProcessing = (file: File | undefined) => {
     if (file) {
-      if (file.type === "text/plain" || file.name.endsWith('.txt')) {
+      const normalizedName = file.name.toLowerCase();
+      if (file.type === "text/plain" || normalizedName.endsWith('.txt')) {
         setSelectedFile(file);
         setError(null);
       } else {
@@ -38,9 +39,14 @@ const UploadPage: React.FC = () => {
     setIsUploading(true);
     setError(null);
     const reader = new FileReader();
-    reader.onload = (e) => {
-      const text = e.target?.result as string;
-      if (text) {
+    reader.onload = async (e) => {
+      try {
+        const text = e.target?.result as string;
+        if (!text) {
+          setError("无法读取文件内容。");
+          return;
+        }
+
         const projectName = selectedFile.name.replace(/\.txt$/i, '');
         const chapters = internalParseScriptToChapters(text, projectName);
 
@@ -54,19 +60,23 @@ const UploadPage: React.FC = () => {
           subCategory: "",  
           lastModified: Date.now(),
         };
-        addProject(newProject);
+
+        await addProject(newProject);
+        setSelectedProjectId(newProject.id);
         navigateTo("dashboard");
-      } else {
-        setError("无法读取文件内容。");
+      } catch (uploadError) {
+        console.error("上传项目时出错:", uploadError);
+        setError(`上传失败: ${uploadError instanceof Error ? uploadError.message : "未知错误"}`);
+      } finally {
+        setIsUploading(false);
       }
-      setIsUploading(false);
     };
     reader.onerror = () => {
       setError("读取文件时出错。");
       setIsUploading(false);
     };
     reader.readAsText(selectedFile);
-  }, [selectedFile, addProject, navigateTo]);
+  }, [selectedFile, addProject, navigateTo, setSelectedProjectId]);
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();

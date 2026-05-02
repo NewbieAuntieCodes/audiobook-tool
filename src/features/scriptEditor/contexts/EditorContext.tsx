@@ -29,14 +29,30 @@ export interface EditorContextType {
   setMultiSelectedChapterIds: React.Dispatch<React.SetStateAction<string[]>>;
   selectedLineForPlayback: ScriptLine | null;
   setSelectedLineForPlayback: React.Dispatch<React.SetStateAction<ScriptLine | null>>;
-  focusedScriptLineId: string | null;
-  setFocusedScriptLineId: React.Dispatch<React.SetStateAction<string | null>>;
-  shortcutActiveLineId: string | null;
-  setShortcutActiveLineId: React.Dispatch<React.SetStateAction<string | null>>;
   
   isLoadingAiAnnotation: boolean;
   isLoadingManualParse: boolean;
   isLoadingImportAnnotation: boolean;
+  isLocalCodexTaskRunning: boolean;
+  localCodexTaskStatus: {
+    taskId?: string;
+    kind?: 'role_sync';
+    visible: boolean;
+    phase: 'idle' | 'queued' | 'running' | 'success' | 'error' | 'cancelled';
+    title: string;
+    message: string;
+    detail: string;
+    createdAt?: number;
+    updatedAt?: number;
+    currentChapterNumber: number;
+    totalChapterCount: number;
+    isCancelling: boolean;
+    canResume: boolean;
+    resumeLabel: string;
+  };
+  cancelLocalCodexTask: () => Promise<void>;
+  resumeLocalCodexTask: () => Promise<void>;
+  dismissLocalCodexTaskStatus: () => void;
   runAiAnnotationForChapters: (chapterIds: string[]) => Promise<void>;
   runManualParseForChapters: (chapterIds: string[]) => Promise<void>;
   openImportModal: () => void;
@@ -52,6 +68,8 @@ export interface EditorContextType {
   openCharacterSidePanel: (character: Character) => void;
   openCvModal: (character: Character | null) => void; 
   openCharacterEditModal: (character: Character | null) => void;
+  generateCharacterProfileWithDeepSeek: (character: Character) => Promise<void>;
+  characterProfileGenerationId: string | null;
   addCustomSoundType: (soundType: string) => void;
   deleteCustomSoundType: (soundType: string) => void;
   addIgnoredSoundKeyword: (projectId: string, chapterId: string, lineId: string, keyword: IgnoredSoundKeyword) => Promise<void>;
