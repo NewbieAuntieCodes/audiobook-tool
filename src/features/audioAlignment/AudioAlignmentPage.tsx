@@ -7,6 +7,7 @@ import { exportAudioWithMarkers } from '../../lib/wavExporter';
 import { db } from '../../db';
 import { ScriptLine, Chapter, Character, PronunciationNote } from '../../types';
 import { useAudioFileMatcher } from './hooks/useAudioFileMatcher';
+import { useAsrAutoAligner } from './hooks/useAsrAutoAligner';
 import ResizablePanels from '../../components/ui/ResizablePanels';
 import { usePaginatedChapters } from '../scriptEditor/hooks/usePaginatedChapters';
 import SilenceSettingsModal from './components/SilenceSettingsModal';
@@ -94,6 +95,15 @@ const AudioAlignmentPage: React.FC = () => {
     characters,
     assignAudioToLine,
     multiSelectedChapterIds,
+  });
+  const {
+    isAsrAlignLoading,
+    handleFileSelectionForAsrAlign,
+  } = useAsrAutoAligner({
+    currentProject,
+    selectedChapterId,
+    characters,
+    assignAudioToLine,
   });
 
   const { projectCharacters, projectCvNames } = useMemo<{ projectCharacters: Character[], projectCvNames: string[] }>(() => {
@@ -348,6 +358,7 @@ const AudioAlignmentPage: React.FC = () => {
             onLufsSettingsChange={setLufsSettings}
             isSmartMatchLoading={isSmartMatchLoading}
             isChapterMatchLoading={isChapterMatchLoading}
+            isAsrAlignLoading={isAsrAlignLoading}
             onOpenExportModal={() => setIsExportModalOpen(true)}
             isExporting={isExporting}
             isExportingToReaper={isExportingToReaper}
@@ -360,6 +371,7 @@ const AudioAlignmentPage: React.FC = () => {
             onGoBack={onGoBack}
             onFileSelectionForSmartMatch={handleFileSelectionForSmartMatch}
             onFileSelectionForChapterMatch={handleFileSelectionForChapterMatch}
+            onFileSelectionForAsrAlign={handleFileSelectionForAsrAlign}
             isReturnMatchLoading={isReturnMatchLoading}
             onFileSelectionForReturnMatch={handleFileSelectionForReturnMatch}
             onReconnect={handleReconnect}

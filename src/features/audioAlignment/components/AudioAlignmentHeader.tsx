@@ -7,6 +7,7 @@ import {
   SpeakerXMarkIcon,
   CogIcon,
   MicrophoneIcon,
+  SparklesIcon,
   CheckCircleIcon,
   XMarkIcon,
   ArrowDownOnSquareIcon,
@@ -36,6 +37,7 @@ interface AudioAlignmentHeaderProps {
   onLufsSettingsChange: (settings: Partial<LufsSettings>) => void;
   isSmartMatchLoading: boolean;
   isChapterMatchLoading: boolean;
+  isAsrAlignLoading: boolean;
   onOpenExportModal: () => void;
   isExporting: boolean;
   isExportingToReaper: boolean;
@@ -48,6 +50,7 @@ interface AudioAlignmentHeaderProps {
   onGoBack: () => void;
   onFileSelectionForSmartMatch: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onFileSelectionForChapterMatch: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onFileSelectionForAsrAlign: (e: React.ChangeEvent<HTMLInputElement>) => void;
   isReturnMatchLoading: boolean;
   onFileSelectionForReturnMatch: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onReconnect: () => void;
@@ -95,6 +98,7 @@ const AudioAlignmentHeader: React.FC<AudioAlignmentHeaderProps> = ({
   onLufsSettingsChange,
   isSmartMatchLoading,
   isChapterMatchLoading,
+  isAsrAlignLoading,
   onOpenExportModal,
   isExporting,
   isExportingToReaper,
@@ -107,16 +111,19 @@ const AudioAlignmentHeader: React.FC<AudioAlignmentHeaderProps> = ({
   onGoBack,
   onFileSelectionForSmartMatch,
   onFileSelectionForChapterMatch,
+  onFileSelectionForAsrAlign,
   isReturnMatchLoading,
   onFileSelectionForReturnMatch,
   onReconnect,
 }) => {
     const chapterMatchFileInputRef = useRef<HTMLInputElement>(null);
     const smartMatchFileInputRef = useRef<HTMLInputElement>(null);
+    const asrAlignFileInputRef = useRef<HTMLInputElement>(null);
     const returnMatchFileInputRef = useRef<HTMLInputElement>(null);
 
     const handleChapterMatchClick = () => chapterMatchFileInputRef.current?.click();
     const handleSmartMatchClick = () => smartMatchFileInputRef.current?.click();
+    const handleAsrAlignClick = () => asrAlignFileInputRef.current?.click();
     const handleReturnMatchClick = () => returnMatchFileInputRef.current?.click();
 
   return (
@@ -142,6 +149,13 @@ const AudioAlignmentHeader: React.FC<AudioAlignmentHeaderProps> = ({
               accept="audio/*"
               ref={smartMatchFileInputRef}
               onChange={onFileSelectionForSmartMatch}
+              className="hidden"
+          />
+          <input
+              type="file"
+              accept="audio/*,.docx,.txt"
+              ref={asrAlignFileInputRef}
+              onChange={onFileSelectionForAsrAlign}
               className="hidden"
           />
           <input
@@ -247,6 +261,16 @@ const AudioAlignmentHeader: React.FC<AudioAlignmentHeaderProps> = ({
           >
               {isChapterMatchLoading ? <LoadingSpinner /> : <ListBulletIcon className="w-4 h-4 mr-1" />}
               {isChapterMatchLoading ? '匹配中...' : '按章节匹配'}
+          </button>
+          <button
+              onClick={handleAsrAlignClick}
+              disabled={isAsrAlignLoading}
+              className="flex items-center text-sm text-violet-300 hover:text-violet-100 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-md disabled:opacity-50"
+              aria-label="AI辅助对轨"
+              title="当前章节单音频：优先使用 faster-whisper GPU 生成时间戳，再匹配脚本。也可同时选择音频和带时间戳 .docx/.txt。"
+          >
+              {isAsrAlignLoading ? <LoadingSpinner /> : <SparklesIcon className="w-4 h-4 mr-1" />}
+              {isAsrAlignLoading ? 'AI对轨中...' : 'AI辅助对轨'}
           </button>
           <button
               onClick={handleReturnMatchClick}

@@ -217,6 +217,40 @@ declare global {
       error?: string;
     }>;
 
+    asrTranscribeFasterWhisper?: (payload: {
+      audioPath: string;
+      pythonPath?: string;
+      scriptPath?: string;
+      model?: string;
+      language?: string;
+      modelDir?: string;
+      device?: 'cuda' | 'cpu' | string;
+      computeType?: string;
+      beamSize?: number;
+    }) => Promise<{
+      success: boolean;
+      segments: Array<{
+        start: number;
+        end: number;
+        text: string;
+      }>;
+      meta?: {
+        engine: 'faster-whisper';
+        pythonPath?: string;
+        scriptPath?: string;
+        model?: string;
+        modelDir?: string;
+        device?: string;
+        computeType?: string;
+        jsonPath?: string;
+        durationMs?: number;
+        language?: string;
+        languageProbability?: number;
+        stderr?: string;
+      };
+      error?: string;
+    }>;
+
     asrTranscribeOpenAIWhisper?: (payload: {
       audioPath: string;
       pythonPath?: string; // default: "python"

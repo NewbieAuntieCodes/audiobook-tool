@@ -381,7 +381,7 @@ export const useAsrAutoAligner = (args: {
         throw new Error('该章节没有可对轨的台词行（可能都是[静音]/[音效]）。');
       }
 
-      const alignMode = transcriptFile ? '转写文档' : 'ASR（Whisper）';
+      let alignMode = transcriptFile ? '转写文档' : 'ASR（Whisper）';
 
       let parsedCues: TimestampCue[] = [];
       let asrSegments: AsrSegment[] = [];
@@ -393,7 +393,11 @@ export const useAsrAutoAligner = (args: {
           throw new Error('转写文档中未解析到任何时间戳（需类似 00:00:01 开头的时间信息）。');
         }
       } else {
-        if (!window.electronAPI?.asrTranscribeOpenAIWhisper && !window.electronAPI?.asrTranscribeWhisperCpp) {
+        if (
+          !window.electronAPI?.asrTranscribeFasterWhisper &&
+          !window.electronAPI?.asrTranscribeOpenAIWhisper &&
+          !window.electronAPI?.asrTranscribeWhisperCpp
+        ) {
           throw new Error('未检测到 Electron 助手：请同时选择“音频 + 带时间戳转写文档(.docx/.txt)”来对齐。');
         }
 
@@ -402,7 +406,16 @@ export const useAsrAutoAligner = (args: {
           throw new Error('未获取到音频文件本地路径。若在网页中使用，请同时选择转写文档(.docx/.txt)。');
         }
 
-        const asrRes = window.electronAPI.asrTranscribeOpenAIWhisper
+        const asrRes = window.electronAPI.asrTranscribeFasterWhisper
+          ? await window.electronAPI.asrTranscribeFasterWhisper({
+              audioPath: filePath,
+              language: 'zh',
+              model: 'small',
+              device: 'cuda',
+              computeType: 'float16',
+              beamSize: 1,
+            })
+          : window.electronAPI.asrTranscribeOpenAIWhisper
           ? await window.electronAPI.asrTranscribeOpenAIWhisper({
               audioPath: filePath,
               language: 'zh',
@@ -417,6 +430,12 @@ export const useAsrAutoAligner = (args: {
           throw new Error(asrRes?.error || 'ASR 转写失败');
         }
 
+        alignMode =
+          asrRes.meta?.engine === 'faster-whisper'
+            ? `AI辅助对轨（faster-whisper ${asrRes.meta.model || 'small'} / ${asrRes.meta.device || 'cuda'}，转写${asrRes.meta.durationMs ? ` ${(asrRes.meta.durationMs / 1000).toFixed(1)}秒` : ''}）`
+            : asrRes.meta?.engine === 'openai-whisper'
+            ? `ASR（openai-whisper ${asrRes.meta.model || ''}）`
+            : 'ASR（whisper.cpp）';
         asrSegments = asrRes.segments || [];
         if (asrSegments.length === 0) {
           throw new Error('ASR 未返回任何可用片段');
